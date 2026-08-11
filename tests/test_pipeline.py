@@ -189,7 +189,7 @@ def test_long_x_post_is_not_truncated():
     280-char truncation in `fullText` — the opposite of the names. Preferring
     fullText cut a 2301-char post to 278 chars, and the model reconstructed the
     missing content from web search and presented it as saved."""
-    full = "1. Thiel Fellowship $250K. " * 90          # ~2400 chars
+    full = ("1. Thiel Fellowship $250K." * 90).strip()   # ~2300 chars, no trailing space
     truncated = full[:278]
     assert acquire._tweet_text({"text": full, "fullText": truncated}) == full
     # and still correct when the fields behave normally
