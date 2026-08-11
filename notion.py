@@ -17,7 +17,7 @@ import urllib.request
 
 import folders
 
-log = logging.getLogger("reel-to-action.notion")
+log = logging.getLogger("saved-to-notes.notion")
 
 API = "https://api.notion.com/v1/pages"
 VERSION = "2022-06-28"

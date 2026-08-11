@@ -14,7 +14,7 @@ import time
 
 _LOCK = threading.Lock()
 _PATH = pathlib.Path(__file__).resolve().parent / "ledger.json"
-log = logging.getLogger("reel-to-action.ledger")
+log = logging.getLogger("saved-to-notes.ledger")
 
 
 def _load_file(path: pathlib.Path) -> dict:
