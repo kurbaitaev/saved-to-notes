@@ -25,7 +25,7 @@ import subprocess
 
 import folders
 
-log = logging.getLogger("reel-to-action.openai")
+log = logging.getLogger("saved-to-notes.openai")
 
 DEFAULT_MODEL = "gpt-5.6-terra"  # vision + web search at 1/2.5 the price of -sol
 MAX_IMAGES = 12

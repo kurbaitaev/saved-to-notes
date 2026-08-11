@@ -1,5 +1,5 @@
 [Unit]
-Description=reel-to-action Telegram bot
+Description=saved-to-notes Telegram bot
 After=network-online.target
 Wants=network-online.target
 
@@ -17,7 +17,7 @@ NoNewPrivileges=true
 PrivateTmp=false
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=__DIR__ /tmp/reel-to-action
+ReadWritePaths=__DIR__ /tmp/saved-to-notes
 
 [Install]
 WantedBy=default.target

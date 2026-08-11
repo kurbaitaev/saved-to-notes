@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Hourly health check for the reel-to-action bot (run by launchd).
+"""Hourly health check for the saved-to-notes bot (run by launchd).
 
 Checks the bot is alive AND actively polling (via logs/heartbeat, touched every
 60s by the bot). If it's down or stuck, restarts it and pings the user on
@@ -18,7 +18,7 @@ import urllib.parse
 import urllib.request
 
 PROJ = pathlib.Path(__file__).resolve().parent
-LABEL = "com.kurbaitaev.reel-to-action"
+LABEL = "com.kurbaitaev.saved-to-notes"
 LOG = PROJ / "logs" / "bot.err.log"
 HEARTBEAT = PROJ / "logs" / "heartbeat"  # bot touches this every 60s while polling
 WLOG = PROJ / "logs" / "watchdog.log"
@@ -37,7 +37,7 @@ def load_env() -> None:
 
 
 def bot_running() -> bool:
-    r = subprocess.run(["pgrep", "-f", "reel-to-action/bot.py"], capture_output=True, text=True)
+    r = subprocess.run(["pgrep", "-f", "saved-to-notes/bot.py"], capture_output=True, text=True)
     return bool(r.stdout.strip())
 
 
@@ -69,7 +69,7 @@ def restart() -> None:
     if IS_MAC:
         cmd = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LABEL}"]
     else:  # systemd handles restarts itself, but kick it if we're called anyway
-        cmd = ["systemctl", "--user", "restart", "reel-to-action.service"]
+        cmd = ["systemctl", "--user", "restart", "saved-to-notes.service"]
     subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 

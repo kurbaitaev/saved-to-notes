@@ -1,10 +1,10 @@
 #!/bin/bash
-# Manage the reel-to-action launchd service.
+# Manage the saved-to-notes launchd service.
 # Usage: ./ctl.sh {install|start|stop|restart|status|logs|tail}
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# Defaults to com.<your-username>.reel-to-action; override with SERVICE_LABEL.
-LABEL="${SERVICE_LABEL:-com.$(id -un).reel-to-action}"
+# Defaults to com.<your-username>.saved-to-notes; override with SERVICE_LABEL.
+LABEL="${SERVICE_LABEL:-com.$(id -un).saved-to-notes}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 LOGDIR="$HERE/logs"

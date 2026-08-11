@@ -1,14 +1,16 @@
-# reel-to-action
+# saved-to-notes
 
-Send an Instagram reel to your own Telegram bot. Get back a clean, permanent note — and keep it after the post disappears.
+Your saved posts are a graveyard. Turn them into something you'll actually read.
 
-Saved reels are a graveyard. You bookmark something useful, and three weeks later you can't find it, can't remember which one had the book recommendation, and half of them have been deleted by the creator. This turns each one into a note you actually own: what it said, word for word, plus real links to every book, podcast, tool or concept it mentioned.
+Send a link — Instagram reel, carousel or photo, an X post, a TikTok — to your own Telegram bot. Get back a clean, permanent note: what it actually said, word for word, plus real verified links to every book, podcast, tool and concept it mentioned. Filed into a folder, searchable, and still yours after the original post is deleted.
 
-It reads the pictures too — a reel that shows a book cover on screen but never says the title still gets that book in the note, with a verified link.
+You bookmark something useful, and three weeks later you can't find it, can't remember which one had the book recommendation, and half of them are gone. That's the problem this exists for.
 
-Everything lands in a local markdown vault (Obsidian-compatible), optionally in a Notion database, and back in your Telegram chat.
+**It reads the pictures too.** A reel that shows a book cover on screen but never says the title still gets that book in the note, with a link. Carousels with no audio at all are read slide by slide.
 
-> **Runs on your Mac, for you.** This is a single-user personal tool, not a hosted service. Your reels and notes never leave your machine except to the APIs you configure.
+Everything lands in a local markdown vault (Obsidian-compatible) organised into folders, optionally a Notion database, and back in your Telegram chat.
+
+> **Runs on your Mac, for you.** A single-user personal tool, not a hosted service. Your saves and notes never leave your machine except to the APIs you configure.
 
 ## What a note looks like
 
@@ -42,8 +44,8 @@ Acquisition is kept out of the agent on purpose: it's the fragile, infrastructur
 **Requires macOS** (launchd for the service, Apple's ffmpeg build, Claude Code CLI) and **Python 3.10+**.
 
 ```bash
-git clone https://github.com/kurbaitaev/reel-to-action.git
-cd reel-to-action
+git clone https://github.com/kurbaitaev/saved-to-notes.git
+cd saved-to-notes
 pip install -r requirements.txt
 brew install yt-dlp ffmpeg
 cp .env.example .env
@@ -102,7 +104,7 @@ Everything optional lives in [.env.example](.env.example) with comments. The one
 | `CLAUDE_MODEL` | *(your default)* | e.g. `claude-sonnet-4-6`. A stronger model gets links right more often. |
 | `VIDEO_FRAMES` | `6` | Frames sampled per video for on-screen text. `0` disables. |
 | `RICH_MESSAGE` | `1` | Telegram Rich Messages. Set `0` for plain HTML. |
-| `SERVICE_LABEL` | `com.<user>.reel-to-action` | launchd service name. |
+| `SERVICE_LABEL` | `com.<user>.saved-to-notes` | launchd service name. |
 
 ### Free vs. paid
 

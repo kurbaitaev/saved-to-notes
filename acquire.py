@@ -20,9 +20,9 @@ import time
 import urllib.parse
 import urllib.request
 
-log = logging.getLogger("reel-to-action.acquire")
+log = logging.getLogger("saved-to-notes.acquire")
 
-TMP = pathlib.Path("/tmp/reel-to-action")
+TMP = pathlib.Path("/tmp/saved-to-notes")
 # Read env at call time (not import) — bot.py loads .env after importing this module.
 
 # A lot of reels carry their real content on screen (book titles, lists, numbers)

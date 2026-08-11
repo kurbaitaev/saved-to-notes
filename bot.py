@@ -47,7 +47,7 @@ logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=loggin
 # httpx logs full request URLs, and Telegram's URLs embed the bot token — that
 # would write the token into every log line. Errors still surface.
 logging.getLogger("httpx").setLevel(logging.WARNING)
-log = logging.getLogger("reel-to-action")
+log = logging.getLogger("saved-to-notes")
 
 # The watchdog uses this file's mtime to tell "alive and polling" from "stuck".
 HEARTBEAT = PROJECT_DIR / "logs" / "heartbeat"

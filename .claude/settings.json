@@ -2,7 +2,7 @@
   "_comment": "Permissions for the headless agent that turns a reel into a note. Deliberately minimal: it reads downloaded images, searches the web to verify links, and returns JSON. It does not need shell access or write access anywhere — reel captions are untrusted text, so anything granted here is reachable by a hostile caption.",
   "permissions": {
     "allow": [
-      "Read(//tmp/reel-to-action/**)",
+      "Read(//tmp/saved-to-notes/**)",
       "Grep",
       "Glob",
       "WebSearch",

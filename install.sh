@@ -1,10 +1,10 @@
 #!/bin/bash
-# Install reel-to-action as a pair of launchd services (macOS): the bot itself,
+# Install saved-to-notes as a pair of launchd services (macOS): the bot itself,
 # plus a watchdog that restarts it if it dies. Safe to re-run — it reinstalls.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-LABEL="${SERVICE_LABEL:-com.$(id -un).reel-to-action}"
+LABEL="${SERVICE_LABEL:-com.$(id -un).saved-to-notes}"
 AGENTS="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
 PYTHON="${PYTHON:-$(command -v python3)}"

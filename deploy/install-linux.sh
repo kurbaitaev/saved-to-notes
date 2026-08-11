@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install reel-to-action as a systemd user service on a Linux VPS.
+# Install saved-to-notes as a systemd user service on a Linux VPS.
 # Run as the normal (non-root) user that owns the checkout:
 #   ./deploy/install-linux.sh
 set -euo pipefail
@@ -7,7 +7,7 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
 PYTHON="${PYTHON:-$(command -v python3)}"
 UNIT_DIR="$HOME/.config/systemd/user"
-UNIT="reel-to-action.service"
+UNIT="saved-to-notes.service"
 
 if [ ! -f "$HERE/.env" ]; then
   echo "error: no .env yet. Run:  cp .env.example .env  then fill it in." >&2
@@ -37,6 +37,6 @@ echo
 systemctl --user --no-pager status "$UNIT" | head -5
 echo
 echo "Done. Useful commands:"
-echo "  systemctl --user restart reel-to-action     # after editing the code"
-echo "  systemctl --user status reel-to-action"
-echo "  journalctl --user -u reel-to-action -f      # live logs"
+echo "  systemctl --user restart saved-to-notes     # after editing the code"
+echo "  systemctl --user status saved-to-notes"
+echo "  journalctl --user -u saved-to-notes -f      # live logs"
