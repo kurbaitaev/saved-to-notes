@@ -21,3 +21,6 @@ venv/
 
 # macOS
 .DS_Store
+
+# Cross-process lock file (created at runtime)
+.ledger.lock

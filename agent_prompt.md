@@ -84,7 +84,7 @@ quotes. Keep every field short — one sentence unless it's a list.
     don't grab the first hit. If you can't tell which is right, mark it `verified: false`.
   - Run the searches in parallel (batch the tool calls), but be accurate, not hasty — a wrong
     link is worse than an honest "unverified" one in a knowledge base.
-- `why_save` — ONE sentence: why this is worth keeping. Neutral, not personalized.
+- `why_save` — ONE sentence: why this is worth keeping. If the input includes WHY THE USER SAVED THIS, that is the answer — do not neutralise or rewrite it; the bot substitutes their exact words. Otherwise stay factual, not flattering.
 - `tags` — 3 short lowercase tags (no `#`), e.g. `["stoicism","focus","mindset"]`.
 
 ## 4. Always also fill (for storage + preservation)

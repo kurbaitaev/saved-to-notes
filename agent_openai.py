@@ -24,6 +24,7 @@ import pathlib
 import subprocess
 
 import folders
+import topics
 
 log = logging.getLogger("saved-to-notes.openai")
 
@@ -75,6 +76,7 @@ SCHEMA = {
     "properties": {
         "title": {"type": "string"},
         "folder": {"type": "string", "enum": folders.FOLDERS},
+        "topics": {"type": "array", "items": {"type": "string", "enum": topics.TOPICS}},
         "content_type": {
             "type": "string",
             "enum": ["quote", "motivational_quote", "thought", "tip", "educational",
@@ -99,7 +101,7 @@ SCHEMA = {
         "description": {"type": "string"},
         "summary": {"type": "string"},
     },
-    "required": ["title", "folder", "content_type", "kind", "categories", "author", "quote",
+    "required": ["title", "folder", "topics", "content_type", "kind", "categories", "author", "quote",
                  "context", "main_idea", "main_thought", "takeaway", "useful_for",
                  "points", "steps", "items", "slides", "why_save", "tags",
                  "description", "summary"],
