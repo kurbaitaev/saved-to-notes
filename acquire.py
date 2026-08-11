@@ -29,6 +29,7 @@ TMP = pathlib.Path("/tmp/saved-to-notes")
 # rather than in speech. We sample frames from the video so the agent can read them.
 # VIDEO_FRAMES=0 disables it.
 THIN_TRANSCRIPT = 200  # below this, the reel is probably visual-first → sample more
+THREAD_MAX_TWEETS = 50  # a thread longer than this is an outlier, not a note
 
 
 class AcquireError(RuntimeError):
@@ -197,6 +198,18 @@ def is_twitter(url: str) -> bool:
     return bool(_TWEET_RE.search(url or ""))
 
 
+def _tweet_text(t: dict) -> str:
+    """The complete post text.
+
+    The field names are a trap: for long (X Premium) posts `fullText` holds the
+    legacy 280-character truncation while `text` holds the whole thing — the
+    opposite of what the names suggest. Preferring `fullText` cut a 2301-char
+    post to 278 chars mid-sentence, and the model quietly reconstructed the
+    rest from web search. Take whichever is actually longer.
+    """
+    return max(((t.get("text") or "").strip(), (t.get("fullText") or "").strip()), key=len)
+
+
 def _acquire_apify_twitter(url: str, token: str) -> dict:
     """X/Twitter via apidojo~tweet-scraper.
 
@@ -211,8 +224,33 @@ def _acquire_apify_twitter(url: str, token: str) -> dict:
         raise AcquireError("Apify returned nothing for this tweet (deleted, private, or protected?)")
     it = items[0]
     author_obj = it.get("author") or {}
-    caption = (it.get("fullText") or it.get("text") or "").strip()
+    caption = _tweet_text(it)
     short = _shortcode(url)
+    handle = (author_obj.get("userName") or "").strip()
+
+    # Multi-tweet threads: conversationIds returns OTHER people's replies, so
+    # search the conversation restricted to the author instead. A single long
+    # post legitimately returns just itself.
+    conv_id = it.get("conversationId")
+    if conv_id and handle and (it.get("replyCount") or 0) > 0:
+        try:
+            thread = _apify_run(actor, {
+                "searchTerms": [f"conversation_id:{conv_id} from:{handle}"],
+                "maxItems": THREAD_MAX_TWEETS}, token)
+        except Exception as e:  # noqa: BLE001
+            log.warning("thread lookup failed (%s) — keeping the single post", e)
+            thread = []
+        parts, seen = [], set()
+        for t in sorted(thread, key=lambda t: str(t.get("createdAt") or "")):
+            if ((t.get("author") or {}).get("userName") or "").lower() != handle.lower():
+                continue
+            txt = _tweet_text(t)
+            if txt and txt not in seen:
+                seen.add(txt)
+                parts.append(txt)
+        if len(parts) > 1:
+            caption = "\n\n".join(parts)
+            log.info("thread: %d posts by @%s (%d chars)", len(parts), handle, len(caption))
 
     images, video_path, frames = [], None, []
     media = (it.get("extendedEntities") or {}).get("media") or []
