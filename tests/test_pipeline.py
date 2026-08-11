@@ -184,6 +184,19 @@ def test_tweet_urls_normalize_and_are_detected():
     assert not acquire.is_twitter("https://x.com/NASA")  # profile, not a post
 
 
+def test_long_x_post_is_not_truncated():
+    """For long (Premium) posts the actor puts the FULL text in `text` and a
+    280-char truncation in `fullText` — the opposite of the names. Preferring
+    fullText cut a 2301-char post to 278 chars, and the model reconstructed the
+    missing content from web search and presented it as saved."""
+    full = "1. Thiel Fellowship $250K. " * 90          # ~2400 chars
+    truncated = full[:278]
+    assert acquire._tweet_text({"text": full, "fullText": truncated}) == full
+    # and still correct when the fields behave normally
+    assert acquire._tweet_text({"text": "", "fullText": "short tweet"}) == "short tweet"
+    assert acquire._tweet_text({}) == ""
+
+
 def test_text_only_tweet_still_produces_a_note():
     """yt-dlp refuses tweets without video ("No video could be found"), which
     lost the note entirely. The Apify path must handle text and photo tweets."""

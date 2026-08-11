@@ -306,11 +306,14 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
 
 def _dedupe_vault_by_source(url: str) -> int:
     """Keep only the newest vault note for a given reel source; delete older ones."""
-    d = PROJECT_DIR / "vault" / "Action Inbox"
+    # Notes live in per-folder subdirectories now. This still pointed at the old
+    # flat "Action Inbox", so it silently matched nothing and every /force redo
+    # left the previous note behind as a duplicate.
+    d = PROJECT_DIR / "vault"
     if not d.exists():
         return 0
     matches = []
-    for n in d.glob("*.md"):
+    for n in d.rglob("*.md"):
         try:
             m = re.search(r"^source:\s*(\S+)", n.read_text(), re.M)
         except OSError:
