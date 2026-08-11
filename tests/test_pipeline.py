@@ -238,6 +238,92 @@ def test_acquire_errors_carry_a_retry_decision():
     assert acquire.AcquireError("deleted", retryable=False).retryable is False
 
 
+def _run(coro):
+    import asyncio
+    return asyncio.run(coro)
+
+
+class _FakeBot:
+    """Minimal stand-in — records what the user would have seen."""
+
+    def __init__(self):
+        self.sent = []
+
+    async def send_message(self, chat_id, text, **kw):
+        self.sent.append(text)
+
+
+def _isolate_ledger(tmp):
+    ledger._PATH, ledger._PENDING = tmp / "l.json", tmp / "p.json"
+    ledger._LOCKFILE = tmp / ".lock"
+
+
+def test_a_failed_link_stays_queued_and_a_saved_one_does_not():
+    """The wiring, not the dataclass: process() must consult the outcome. Three
+    links were lost because the retry marker was cleared in `finally`."""
+    import os
+    os.environ["RICH_MESSAGE"] = "0"
+    url = "https://www.instagram.com/reel/WIRED/"
+    for outcome, still_queued in ((bot.SAVED, False), (bot.PERMANENT, False),
+                                  (bot.RETRYABLE, True)):
+        _isolate_ledger(pathlib.Path(tempfile.mkdtemp()))
+        real, bot._in_flight = bot.run_pipeline, set()
+
+        async def fake(*a, _o=outcome, **k):
+            return bot.Result("note", None, None, _o)
+
+        bot.run_pipeline = fake
+        try:
+            _run(bot.process(_FakeBot(), 1, url, force=False))
+        finally:
+            bot.run_pipeline = real
+        queued = acquire.normalize_url(url) in ledger.pending_all()
+        assert queued is still_queued, f"{outcome}: queued={queued}"
+
+
+def test_an_exception_mid_flight_keeps_the_link():
+    """An exception is the case most worth recovering from, and used to be the
+    one case recovery could never reach."""
+    import os
+    os.environ["RICH_MESSAGE"] = "0"
+    _isolate_ledger(pathlib.Path(tempfile.mkdtemp()))
+    url = "https://www.instagram.com/reel/BOOM/"
+    real, bot._in_flight = bot.run_pipeline, set()
+
+    async def blow_up(*a, **k):
+        raise RuntimeError("network died")
+
+    bot.run_pipeline = blow_up
+    fake_bot = _FakeBot()
+    try:
+        _run(bot.process(fake_bot, 1, url, force=False))
+    finally:
+        bot.run_pipeline = real
+    assert acquire.normalize_url(url) in ledger.pending_all(), "link was dropped"
+    assert any("retry" in t for t in fake_bot.sent), fake_bot.sent
+
+
+def test_your_own_words_become_why_save_verbatim():
+    """A model paraphrase of your own reason is strictly worse than your reason."""
+    obj = bot._sanitize({"why_save": "a neutral model sentence"})
+    obj["why_save"] = "compare with our onboarding"      # what run_pipeline does
+    assert obj["why_save"] == "compare with our onboarding"
+    # and the prompt must not tell the model to neutralise it
+    prompt = bot._load_prompt()
+    assert "Neutral, not personalized" not in prompt
+    assert "WHY THE USER SAVED THIS" in bot._media_context(
+        "u", {"platform": "instagram"}, user_note="compare with our onboarding")
+
+
+def test_prompt_has_no_unsubstituted_placeholders():
+    """A typo'd placeholder would ship `{{TOPIC_RULES}}` literally to the model."""
+    prompt = bot._load_prompt()
+    assert "{{" not in prompt, "unsubstituted placeholder in the prompt"
+    for folder in folders.FOLDERS:
+        assert folder in prompt, folder
+    assert "investors-fundraising" in prompt
+
+
 # --- frame cost ----------------------------------------------------------
 
 def test_frame_count_scales_down_on_a_rich_transcript():
@@ -359,8 +445,9 @@ def test_openai_schema_obeys_strict_mode():
 
     check(agent_openai.SCHEMA)
     # The renderers, Notion sink and vault writer all read these.
-    for field in ("title", "content_type", "items", "points", "steps", "slides",
-                  "tags", "categories", "description", "summary", "why_save", "quote"):
+    for field in ("title", "folder", "topics", "content_type", "items", "points",
+                  "steps", "slides", "tags", "categories", "description", "summary",
+                  "why_save", "quote"):
         assert field in agent_openai.SCHEMA["properties"], f"schema is missing {field}"
 
 

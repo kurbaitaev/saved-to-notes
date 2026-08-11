@@ -119,7 +119,6 @@ def ensure_notion_property(dry: bool) -> bool:
     notion._api(f"https://api.notion.com/v1/databases/{db}", token, "PATCH",
                 {"properties": {"Topics": {"multi_select": {
                     "options": [{"name": t} for t in topics.TOPICS]}}}})
-    notion._db_props.cache_clear() if hasattr(notion._db_props, "cache_clear") else None
     print(f"  created Topics with {len(topics.TOPICS)} options")
     return True
 

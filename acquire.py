@@ -564,7 +564,10 @@ def _acquire_ytdlp(url: str) -> dict:
         key=lambda p: p.stat().st_mtime, reverse=True,
     )
     video_path = str(vids[0]) if vids else None
-    frames = video_frames(video_path, _shortcode(url), _frame_count(0))
+    n = _frame_count(0)   # no transcript on this path — the screen carries it
+    frames = video_frames(video_path, _shortcode(url), n)
+    warnings = ([f"{n - len(frames)} of {n} video frames couldn't be extracted"]
+                if n and len(frames) < n else [])
     return {
         "source_url": url,
         "platform": meta.get("extractor_key", "unknown"),
@@ -577,6 +580,7 @@ def _acquire_ytdlp(url: str) -> dict:
         "video_path": video_path,
         "images": [],
         "frames": frames,
+        "warnings": warnings,
     }
 
 

@@ -108,16 +108,25 @@ def _post(payload: dict, token: str) -> tuple[bool, str, str]:
         return False, str(e), ""
 
 
-def _append_blocks(page_id: str, blocks: list, token: str) -> None:
+def _append_blocks(page_id: str, blocks: list, token: str) -> str:
     """Notion accepts at most 100 blocks per call, so overflow is appended in
-    batches. Without this the tail of a long note was silently dropped."""
+    batches. Returns "" on success, else a description of what was lost.
+
+    Swallowing this reported a full save while the transcript — appended last,
+    so always the first casualty — had silently vanished.
+    """
     for i in range(0, len(blocks), 100):
-        try:
-            _api(f"https://api.notion.com/v1/blocks/{page_id}/children", token, "PATCH",
-                 {"children": blocks[i:i + 100]})
-        except Exception as e:  # noqa: BLE001
-            log.warning("appending blocks %d+ failed: %s", i, e)
-            return
+        batch = blocks[i:i + 100]
+        for attempt in (1, 2):
+            try:
+                _api(f"https://api.notion.com/v1/blocks/{page_id}/children", token, "PATCH",
+                     {"children": batch})
+                break
+            except Exception as e:  # noqa: BLE001
+                if attempt == 2:
+                    log.warning("appending blocks %d+ failed: %s", i, e)
+                    return f"{len(blocks) - i} block(s) (incl. the transcript) failed to save: {e}"
+    return ""
 
 
 def _prop_value(ptype: str, value) -> dict | None:
@@ -335,6 +344,7 @@ def push_reel(obj: dict, source_url: str, date_iso: str,
     # Anything past Notion's 100-block limit goes in follow-up calls. The
     # transcript toggle lives at the end, so without this a long list reel
     # silently lost the verbatim record — the whole point of saving it.
+    warning = ""
     if len(children) > 100 and page_id:
-        _append_blocks(page_id, children[100:], token)
-    return {"created": 1, "items": len(items), "error": ""}
+        warning = _append_blocks(page_id, children[100:], token)
+    return {"created": 1, "items": len(items), "error": "", "warning": warning}

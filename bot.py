@@ -312,6 +312,9 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
     t_agent = time.monotonic()
 
     obj = _sanitize(obj)
+    if user_note:
+        # Their words, not a paraphrase of their words.
+        obj["why_save"] = user_note
     n_bad = _validate_links(obj)
     if n_bad:
         log.info("downgraded %d non-canonical 'verified' link(s) for %s", n_bad, url)
@@ -903,8 +906,9 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "")
         # Anything unhandled must still close the loop — otherwise the user is
         # left watching "⏳ Working…" forever with no idea the reel died.
         log.error("processing failed for %s", url, exc_info=e)
-        err = (f"❌ That reel broke while processing:\n{type(e).__name__}: {e}\n\n"
-               "It stays queued and will retry — or send the link again now.")
+        tail = ("The note itself was saved — only the message failed."
+                if release else "It stays queued and will retry — or send the link again now.")
+        err = f"❌ That link broke while processing:\n{type(e).__name__}: {e}\n\n{tail}"
         if not (mid and await _edit_rich(chat_id, mid, html.escape(err))):
             try:
                 await bot.send_message(chat_id, err)
@@ -994,7 +998,7 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str) -> st
     elif transcript.strip():
         L += ["", "## Transcript", "", transcript.strip(), ""]
     (d / fname).write_text("\n".join(L))
-    return f"Action Inbox/{fname}"
+    return f"{folder}/{fname}"
 
 
 def _sync_notion(obj: dict, media: dict, url: str, transcript: str, date_iso: str) -> str:
@@ -1012,6 +1016,10 @@ def _sync_notion(obj: dict, media: dict, url: str, transcript: str, date_iso: st
         author=author,
     )
     if res["created"]:
+        if res.get("warning"):
+            # The page exists, so the ledger is right to say done — but the note
+            # is incomplete and the user has to know.
+            raise RuntimeError(f"Notion page saved but incomplete — {res['warning']}")
         return f"🗂 Notion: 1 reel · {res['items']} items"
     # Raise so the caller reports it: a silent failure meant the message looked
     # perfect, the ledger marked the reel done, and it was never retried.
@@ -1075,7 +1083,8 @@ async def on_force(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("Nothing to redo yet — send me a reel link first.")
         return
     await update.message.reply_text(f"♻️ Redoing {url[:80]}…")
-    await process(context.bot, update.effective_chat.id, url, force=True)
+    kept = (ledger.pending_all().get(acquire.normalize_url(url)) or {}).get("note", "")
+    await process(context.bot, update.effective_chat.id, url, force=True, user_note=kept)
 
 
 async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1204,6 +1213,9 @@ async def _resume_pending(app) -> None:
                 continue
             # A reel that keeps killing the bot would otherwise be retried on
             # every startup forever, blocking real messages behind it.
+            if (ledger.get(url) or {}).get("status") == "done":
+                ledger.pending_remove(url)   # finished, just never un-marked
+                continue
             if ledger.pending_attempt(url) > MAX_RESUME_ATTEMPTS:
                 ledger.pending_remove(url)
                 log.warning("giving up on %s after %d attempts", url, MAX_RESUME_ATTEMPTS)
