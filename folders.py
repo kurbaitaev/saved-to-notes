@@ -14,19 +14,19 @@ answer, and the validator that catches anything invalid.
 import re
 
 CONTENT_IDEAS = "Content Ideas"
-MOTIVATION = "Motivation"
+MINDSET = "Mindset"
 STARTUP = "Startup"
 TOOLS_AI = "Tools & AI"
 LEARNING = "Learning & Self"
 
-FOLDERS = [CONTENT_IDEAS, MOTIVATION, STARTUP, TOOLS_AI, LEARNING]
+FOLDERS = [CONTENT_IDEAS, MINDSET, STARTUP, TOOLS_AI, LEARNING]
 DEFAULT = LEARNING  # broadest bucket; used when the model returns nonsense
 
 DESCRIPTIONS = {
     CONTENT_IDEAS: "making content: hooks, formats, reel/post ideas, scripts, "
                    "storytelling, filming, editing, captions, posting strategy, "
                    "growth and distribution",
-    MOTIVATION: "quotes, mindset, discipline, resilience, faith, philosophy, "
+    MINDSET: "quotes, mindset, discipline, resilience, faith, philosophy, "
                 "identity and purpose",
     STARTUP: "building a business: investors, accelerators, fundraising, pitching, "
              "business models, monetization, sales, hiring, founder operations",
@@ -43,7 +43,7 @@ RULES = f"""\
 Pick the ONE folder matching what the viewer would USE this for:
 
 - **{CONTENT_IDEAS}** — {DESCRIPTIONS[CONTENT_IDEAS]}
-- **{MOTIVATION}** — {DESCRIPTIONS[MOTIVATION]}
+- **{MINDSET}** — {DESCRIPTIONS[MINDSET]}
 - **{STARTUP}** — {DESCRIPTIONS[STARTUP]}
 - **{TOOLS_AI}** — {DESCRIPTIONS[TOOLS_AI]}
 - **{LEARNING}** — {DESCRIPTIONS[LEARNING]}
@@ -57,12 +57,12 @@ Tie-breaks, in order:
    If the tool is just the means to an outcome ("build a PR pipeline with AI") →
    file by the outcome ({CONTENT_IDEAS} here).
 3. **Recommendations are NOT a folder.** A book, podcast or channel is filed by its
-   SUBJECT — a book about discipline → {MOTIVATION}; a podcast about fundraising →
+   SUBJECT — a book about discipline → {MINDSET}; a podcast about fundraising →
    {STARTUP}. Record that it's a recommendation in `content_type` and `tags`.
-4. **Quotes** go to {MOTIVATION} unless the quote is squarely about one of the other
+4. **Quotes** go to {MINDSET} unless the quote is squarely about one of the other
    folders (a quote about fundraising → {STARTUP}).
 5. **Inspiration vs instruction.** Something that makes you *feel* like acting →
-   {MOTIVATION}. Something that tells you *how* → the matching practical folder.
+   {MINDSET}. Something that tells you *how* → the matching practical folder.
 6. If two still fit, choose the one you'd look in first to act on it. Never invent
    a folder name and never leave it blank — worst case use **{LEARNING}**.
 """
@@ -74,7 +74,7 @@ _HINTS = [
     (STARTUP, r"business|founder|invest\w*|startup|fundrais\w*|accelerator|pitch|revenue|vc"),
     (TOOLS_AI, r"ai|a\.i\.|tool\w*|app|apps|software|automation|prompt\w*|llm"),
     (CONTENT_IDEAS, r"content|reel\w*|hook\w*|post\w*|video\w*|script\w*|caption\w*|creator"),
-    (MOTIVATION, r"quote\w*|mindset|motivat\w*|discipline|inspiration|philosophy"),
+    (MINDSET, r"quote\w*|mindset|motivat\w*|discipline|inspiration|philosophy"),
     (LEARNING, r"learn\w*|self|habit\w*|journal\w*|health|study|education"),
 ]
 

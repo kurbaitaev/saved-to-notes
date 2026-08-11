@@ -5,6 +5,8 @@ One file, keyed by URL. Good enough for single-user; swap for Postgres
 in the multi-user phase.
 """
 
+import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -13,6 +15,25 @@ import threading
 import time
 
 _LOCK = threading.Lock()
+_LOCKFILE = pathlib.Path(__file__).resolve().parent / ".ledger.lock"
+
+
+@contextlib.contextmanager
+def _exclusive():
+    """Lock across PROCESSES, not just threads.
+
+    `bot.py --test` runs the whole pipeline against the same files as the live
+    bot. Two processes doing read-modify-write on one JSON file is
+    last-writer-wins, so one silently erases the other's entry. flock is
+    released automatically if a process dies.
+    """
+    with _LOCK:
+        with open(_LOCKFILE, "w") as fh:
+            fcntl.flock(fh, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh, fcntl.LOCK_UN)
 _PATH = pathlib.Path(__file__).resolve().parent / "ledger.json"
 log = logging.getLogger("saved-to-notes.ledger")
 
@@ -50,7 +71,7 @@ def get(url: str) -> dict | None:
 
 
 def put(url: str, record: dict) -> None:
-    with _LOCK:
+    with _exclusive():
         data = _load()
         data[url] = record
         _save_file(_PATH, data)
@@ -67,17 +88,20 @@ def _load_pending() -> dict:
     return _load_file(_PENDING)
 
 
-def pending_add(url: str, chat_id: int) -> None:
-    with _LOCK:
+def pending_add(url: str, chat_id: int, note: str = "") -> None:
+    with _exclusive():
         d = _load_pending()
         rec = d.get(url) or {}
-        d[url] = {"chat_id": chat_id, "attempts": rec.get("attempts", 0)}
+        # `note` is the user's own reason for saving; it must survive a restart
+        # or the recovered note loses the intent it was meant to be written for.
+        d[url] = {"chat_id": chat_id, "attempts": rec.get("attempts", 0),
+                  "note": note or rec.get("note", "")}
         _save_file(_PENDING, d)
 
 
 def pending_attempt(url: str) -> int:
     """Count a recovery attempt. Lets the resumer give up on a poison reel."""
-    with _LOCK:
+    with _exclusive():
         d = _load_pending()
         if url not in d:
             return 0
@@ -88,7 +112,7 @@ def pending_attempt(url: str) -> int:
 
 
 def pending_remove(url: str) -> None:
-    with _LOCK:
+    with _exclusive():
         d = _load_pending()
         if d.pop(url, None) is not None:
             _save_file(_PENDING, d)
