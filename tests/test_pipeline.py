@@ -19,6 +19,7 @@ import bot  # noqa: E402
 import folders  # noqa: E402
 import ledger  # noqa: E402
 import notion  # noqa: E402
+import topics  # noqa: E402
 
 
 # --- agent output --------------------------------------------------------
@@ -218,6 +219,97 @@ def test_text_only_tweet_still_produces_a_note():
     acquire.cleanup(m)
 
 
+# --- outcomes: the reel-losing bugs --------------------------------------
+
+def test_pipeline_result_defaults_to_keeping_the_link_queued():
+    """An unforeseen exit must keep the link, not drop it. Three links were
+    lost because failure and success were indistinguishable to the caller."""
+    assert bot.Result("x").keep_queued is True
+    assert bot.Result("x").saved is False
+    assert bot.Result("x", outcome=bot.SAVED).saved is True
+    assert bot.Result("x", outcome=bot.SAVED).keep_queued is False
+    # permanent failures release the link — a deleted post can never succeed
+    assert bot.Result("x", outcome=bot.PERMANENT).keep_queued is False
+    assert bot.Result("x", outcome=bot.PERMANENT).saved is False
+
+
+def test_acquire_errors_carry_a_retry_decision():
+    assert acquire.AcquireError("rate limited").retryable is True
+    assert acquire.AcquireError("deleted", retryable=False).retryable is False
+
+
+# --- frame cost ----------------------------------------------------------
+
+def test_frame_count_scales_down_on_a_rich_transcript():
+    """It only ever scaled UP before: 40 of 46 reels sampled 6 frames despite
+    transcripts over 800 chars, ~7k wasted tokens each."""
+    import os
+    os.environ.pop("VIDEO_FRAMES", None)
+    assert acquire._frame_count(0) == acquire.FRAMES_VISUAL      # no speech: read the screen
+    assert acquire._frame_count(199) == acquire.FRAMES_VISUAL
+    assert acquire._frame_count(200) == acquire.FRAMES_MIXED
+    assert acquire._frame_count(799) == acquire.FRAMES_MIXED
+    assert acquire._frame_count(800) == acquire.FRAMES_RICH      # the words carry it
+    assert acquire._frame_count(5000) == acquire.FRAMES_RICH
+    try:
+        os.environ["VIDEO_FRAMES"] = "0"
+        assert acquire._frame_count(0) == 0                      # explicit off
+        os.environ["VIDEO_FRAMES"] = "3"
+        assert acquire._frame_count(0) == 3                      # caps the tier
+        assert acquire._frame_count(5000) == acquire.FRAMES_RICH  # never raises it
+    finally:
+        os.environ.pop("VIDEO_FRAMES", None)
+
+
+# --- topics --------------------------------------------------------------
+
+def test_topics_are_a_closed_vocabulary():
+    # invented topics are dropped rather than creating new Notion options —
+    # that sprawl is what made 301 free-form tags unusable as a filter
+    assert topics.normalize_list(["totally-made-up"]) == []
+    assert topics.normalize_list("investors-fundraising") == ["investors-fundraising"]
+    assert len(topics.normalize_list(topics.TOPICS)) == topics.MAX_PER_NOTE
+    assert topics.normalize_list(None) == []
+    assert topics.normalize_list([None, 42, ""]) == []
+
+
+def test_topics_map_from_the_tags_notes_already_carry():
+    assert topics.from_tags(["venture-capital"]) == ["investors-fundraising"]
+    assert topics.from_tags(["pre-seed", "accelerators"]) == ["investors-fundraising"]
+    assert topics.from_tags(["hooks", "storytelling"]) == ["hooks-storytelling"]
+    assert "ai-tools" in topics.from_tags(["claude", "automation"])
+
+
+def test_every_topic_is_reachable_from_its_own_name():
+    for t in topics.TOPICS:
+        assert topics.normalize_list([t]) == [t], t
+
+
+# --- ledger across processes ---------------------------------------------
+
+def test_ledger_survives_two_processes_writing_at_once():
+    """`--test` runs the full pipeline against the same files as the live bot.
+    A thread lock does nothing there — last writer used to win."""
+    import subprocess as sp
+    tmp = pathlib.Path(tempfile.mkdtemp())
+    proj = pathlib.Path(__file__).resolve().parent.parent
+    prog = (
+        f"import sys; sys.path.insert(0, {str(proj)!r})\n"
+        "import pathlib, ledger\n"
+        f"ledger._PATH = pathlib.Path({str(tmp / 'l.json')!r})\n"
+        f"ledger._PENDING = pathlib.Path({str(tmp / 'p.json')!r})\n"
+        f"ledger._LOCKFILE = pathlib.Path({str(tmp / '.lock')!r})\n"
+        "[ledger.put(f'w{sys.argv[1]}-{i}', {'status': 'done'}) for i in range(40)]\n"
+    )
+    procs = [sp.Popen([sys.executable, "-c", prog, tag]) for tag in ("a", "b")]
+    for pr in procs:
+        pr.wait(timeout=60)
+    ledger._PATH, ledger._PENDING = tmp / "l.json", tmp / "p.json"
+    ledger._LOCKFILE = tmp / ".lock"
+    surviving = json.loads((tmp / "l.json").read_text())
+    assert len(surviving) == 80, f"lost {80 - len(surviving)} entries to a race"
+
+
 # --- folders -------------------------------------------------------------
 
 def test_every_note_gets_exactly_one_valid_folder():
@@ -234,7 +326,7 @@ def test_folder_normalizer_tolerates_near_misses():
         "Startup": "Startup", "startup tips": "Startup", "Fundraising": "Startup",
         "AI Tools": "Tools & AI", "tooling": "Tools & AI",
         "content": "Content Ideas", "Content Ideas": "Content Ideas",
-        "motivation": "Motivation", "quotes": "Motivation",
+        "motivation": "Mindset", "quotes": "Mindset",
         "Learning & Self": "Learning & Self",
     }
     for given, want in cases.items():

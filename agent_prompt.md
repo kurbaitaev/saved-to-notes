@@ -89,55 +89,24 @@ quotes. Keep every field short — one sentence unless it's a list.
 
 ## 4. Always also fill (for storage + preservation)
 - `title` — ≤6 words.
-- `folder` — EXACTLY ONE of: Content Ideas | Motivation | Startup | Tools & AI | Learning & Self (rules below).
+- `folder` — EXACTLY ONE of: {{FOLDER_LIST}} (rules below).
+- `topics` — 1–3 from the topic list below.
 - `description` — 1–2 line factual description.
 - `summary` — short factual summary.
 - `categories` — any of: Content & Creator, Recommendations, Mindset, Life & Career, Tools & AI, Business idea, Quote.
 - `kind` — video | carousel | image | article.
 
-## Folder (exactly one — this is where the note is filed)
+{{FOLDER_RULES}}
 
-Pick the ONE folder matching what the viewer would USE this for:
-
-- **Content Ideas** — making content: hooks, formats, reel/post ideas, scripts, storytelling, filming, editing, captions, posting strategy, growth and distribution
-- **Motivation** — quotes, mindset, discipline, resilience, faith, philosophy, identity and purpose
-- **Startup** — building a business: investors, accelerators, fundraising, pitching, business models, monetization, sales, hiring, founder operations
-- **Tools & AI** — a specific tool, app, AI model, automation or prompt workflow
-- **Learning & Self** — how to think, learn and live: journaling, mental models, note-taking, reading, health, habits, relationships, career decisions, education
-
-Tie-breaks, in order:
-
-1. **Purpose beats subject.** "10 things founders should post" is about posting →
-   Content Ideas, not Startup. "How to pitch investors" is about the business →
-   Startup.
-2. **Tool vs outcome.** If the point is *which tool and how to drive it* → Tools & AI.
-   If the tool is just the means to an outcome ("build a PR pipeline with AI") →
-   file by the outcome (Content Ideas here).
-3. **Recommendations are NOT a folder.** A book, podcast or channel is filed by its
-   SUBJECT — a book about discipline → Motivation; a podcast about fundraising →
-   Startup. Record that it's a recommendation in `content_type` and `tags`.
-4. **Quotes** go to Motivation unless the quote is squarely about one of the other
-   folders (a quote about fundraising → Startup).
-5. **Inspiration vs instruction.** Something that makes you *feel* like acting →
-   Motivation. Something that tells you *how* → the matching practical folder.
-6. If two still fit, choose the one you'd look in first to act on it. Never invent
-   a folder name and never leave it blank — worst case use **Learning & Self**.
-
-
-## Rules
-- Quote is the hero when the Reel is mainly a quote.
-- Describe from the author's point of view.
-- Every point / recommendation / step / idea on its own line (its own array element).
-- Short. No paragraphs, no article, no over-explaining, no invented details.
-- If unclear: `"Not clear from the Reel"`. If author unclear: `"Author not clear"`.
-- Plain text in all values (no markdown/HTML — the bot formats).
+{{TOPIC_RULES}}
 
 ## 5. Output — ONE JSON object between the markers
 ```
 @@JSON@@
 {
   "title": "...",
-  "folder": "Content Ideas | Motivation | Startup | Tools & AI | Learning & Self",
+  "folder": "{{FOLDER_LIST}}",
+  "topics": ["...", "..."],
   "content_type": "...",
   "kind": "video | carousel | article",
   "categories": ["..."],

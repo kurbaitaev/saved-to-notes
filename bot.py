@@ -36,6 +36,7 @@ import agent_openai
 import folders
 import ledger
 import notion
+import topics
 
 PROJECT_DIR = Path(__file__).resolve().parent
 PROMPT_FILE = PROJECT_DIR / "agent_prompt.md"
@@ -77,7 +78,20 @@ def load_env() -> None:
 
 JSON_RE = re.compile(r"@@JSON@@\s*(.*?)\s*@@END@@", re.DOTALL)
 
-def _media_context(url: str, media: dict) -> str:
+def _load_prompt() -> str:
+    """agent_prompt.md with the taxonomy substituted in.
+
+    The folder rules used to be hand-copied into the prompt file, so renaming a
+    folder in folders.py left the prompt still teaching the old name to both
+    backends. Placeholders keep folders.py the single definition it claims to be.
+    """
+    text = PROMPT_FILE.read_text()
+    return (text.replace("{{FOLDER_LIST}}", " | ".join(folders.FOLDERS))
+                .replace("{{FOLDER_RULES}}", folders.RULES)
+                .replace("{{TOPIC_RULES}}", topics.RULES))
+
+
+def _media_context(url: str, media: dict, user_note: str = "") -> str:
     """The per-reel facts, without any local file paths.
 
     Used by the OpenAI backend, which receives the images attached to the
@@ -85,6 +99,10 @@ def _media_context(url: str, media: dict) -> str:
     """
     ctx = [f"URL: {url}", f"Platform: {media.get('platform')}", f"Kind: {media.get('kind')}",
            f"Today's date: {datetime.date.today().isoformat()}"]
+    if user_note:
+        ctx.append(
+            "WHY THE USER SAVED THIS (their own words — treat it as the primary lens for what "
+            f"to extract, and lead the note toward it):\n{user_note[:600]}")
     if media.get("author"):
         ctx.append(f"Author: {media['author']}")
     if media.get("caption"):
@@ -105,9 +123,13 @@ def _media_context(url: str, media: dict) -> str:
     return "\n".join(ctx)
 
 
-def build_prompt(url: str, media: dict) -> str:
+def build_prompt(url: str, media: dict, user_note: str = "") -> str:
     """Compose the agent prompt with pre-acquired media context."""
     ctx = [f"URL: {url}", f"Platform: {media.get('platform')}", f"Kind: {media.get('kind')}"]
+    if user_note:
+        ctx.append(
+            "WHY THE USER SAVED THIS (their own words — treat it as the primary lens for what "
+            f"to extract, and lead the note toward it):\n{user_note[:600]}")
     if media.get("author"):
         ctx.append(f"Author: {media['author']}")
     if media.get("caption"):
@@ -147,7 +169,7 @@ def build_prompt(url: str, media: dict) -> str:
             f"or scenery, and do NOT invent text you cannot actually read:\n{paths}"
         )
     return (
-        PROMPT_FILE.read_text()
+        _load_prompt()
         + f"\n\n---\nToday's date: {datetime.date.today().isoformat()}\n"
         + "\n".join(ctx)
         + "\n"
@@ -199,22 +221,48 @@ async def run_agent(prompt: str) -> str:
     return stdout.decode().strip() or "❌ Agent returned no output."
 
 
+SAVED, RETRYABLE, PERMANENT = "saved", "failed_retryable", "failed_permanent"
+
+
+class Result:
+    """What happened to one link.
+
+    Without this, `process()` could not tell a saved note from a failed one, so
+    it cleared the retry marker on every exit — which is why the recovery
+    machinery only ever fired for hard kills. Defaults to RETRYABLE so an
+    unforeseen exit keeps the note rather than dropping it.
+    """
+
+    def __init__(self, html_msg: str, rich_md: str | None = None,
+                 blocks: dict | None = None, outcome: str = RETRYABLE):
+        self.html, self.rich_md, self.blocks, self.outcome = html_msg, rich_md, blocks, outcome
+
+    @property
+    def saved(self) -> bool:
+        return self.outcome == SAVED
+
+    @property
+    def keep_queued(self) -> bool:
+        return self.outcome == RETRYABLE
+
+
 async def run_pipeline(url: str, force: bool = False, on_progress=None,
-                       media: dict | None = None) -> tuple[str, str | None, dict | None]:
-    """Acquire → reason → persist. Returns (html_message, rich_html_or_None, blocks_or_None).
+                       media: dict | None = None, user_note: str = "") -> Result:
+    """Acquire → reason → persist.
 
     on_progress(stage) is an optional async callback fired at real milestones
     ("acquired") so the caller can update a status message in place.
     media, if supplied, skips acquisition (used to re-verify from a stored transcript).
     """
+    t0 = time.monotonic()
     url = acquire.normalize_url(url)  # strip ?igsh=… so the same reel is one key
     cached = ledger.get(url)
     if cached and cached.get("status") == "done" and not force:
         note = "\n\n(already processed — send /force to redo)"
         md = cached.get("markdown")
-        return (cached["digest"] + note,
-                (md + "<br><br><i>(already processed — /force to redo)</i>" if md else None),
-                cached.get("blocks"))
+        return Result(cached["digest"] + note,
+                      (md + "<br><br><i>(already processed — /force to redo)</i>" if md else None),
+                      cached.get("blocks"), SAVED)
 
     if media is None:
         # Acquisition is blocking I/O — keep the event loop free.
@@ -222,7 +270,12 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
             media = await asyncio.to_thread(acquire.acquire, url)
         except acquire.AcquireError as e:
             log.error("acquire failed for %s: %s", url, e)
-            return f"❌ Couldn't fetch that link:\n{e}", None, None
+            # A deleted or private post will never succeed — retrying it on every
+            # restart would just repeat the same message three times.
+            outcome = RETRYABLE if getattr(e, "retryable", True) else PERMANENT
+            tail = "\n\nStill queued — it'll retry." if outcome == RETRYABLE else ""
+            return Result(f"❌ Couldn't fetch that link:\n{e}{tail}", None, None, outcome)
+    t_acquired = time.monotonic()
 
     if on_progress:
         await on_progress("acquired")
@@ -232,22 +285,31 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
         try:
             obj = await asyncio.to_thread(
                 agent_openai.analyze,
-                PROMPT_FILE.read_text(),
-                _media_context(url, media),
+                _load_prompt(),
+                _media_context(url, media, user_note),
                 (media.get("images") or []) + (media.get("frames") or []),
             )
         except Exception as e:  # noqa: BLE001
             log.error("openai backend failed for %s: %s", url, e)
-            return html.escape(f"❌ {e}"), None, None
+            return Result(html.escape(f"❌ {e}\n\nStill queued — it'll retry."),
+                          None, None, RETRYABLE)
     else:
-        raw = await run_agent(build_prompt(url, media))
+        raw = await run_agent(build_prompt(url, media, user_note))
         if raw.startswith(("❌", "⏰", "🔑")):
-            return html.escape(raw), None, None
+            return Result(html.escape(raw + "\n\nStill queued — it'll retry."),
+                          None, None, RETRYABLE)
         obj = _parse_output(raw)
         if obj is None:
-            # Couldn't parse structured output — send the cleaned text as-is.
+            # Returning the raw text used to look like a successful note while
+            # nothing was written anywhere — three links were lost that way.
             log.warning("no @@JSON@@ block in agent output for %s", url)
-            return html.escape(JSON_RE.sub("", raw).strip()), None, None
+            preview = html.escape(JSON_RE.sub("", raw).strip()[:500])
+            return Result(
+                "⚠️ Couldn't turn this into a structured note — <b>nothing was saved</b>.\n"
+                "It stays queued and retries on the next restart, or send the link "
+                f"again to retry now.\n\nWhat the agent said:\n{preview}",
+                None, None, RETRYABLE)
+    t_agent = time.monotonic()
 
     obj = _sanitize(obj)
     n_bad = _validate_links(obj)
@@ -255,8 +317,12 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
         log.info("downgraded %d non-canonical 'verified' link(s) for %s", n_bad, url)
 
     transcript = media.get("transcript", "") or ""
-    # Preserve the original 'added' date on re-process; new reels get today.
-    prior = await asyncio.to_thread(notion.existing_date, url) if notion.enabled() else None
+    # Preserve the original 'added' date on re-process. Only a link we've seen
+    # before can have a prior row, so on the common new-link path this whole
+    # round-trip is skippable.
+    prior = None
+    if notion.enabled() and (force or cached):
+        prior = await asyncio.to_thread(notion.existing_date, url)
     date_iso = prior or datetime.date.today().isoformat()
     # vault write (disk) and Notion sync (network) are independent — run them together
     sinks = [asyncio.to_thread(_write_vault_note, obj, url, transcript, date_iso)]
@@ -278,10 +344,17 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
         # Native blocks are the nicest rendering, not a requirement — fall back.
         log.warning("block rendering failed for %s: %s", url, e)
         rich_blocks = None
+    warns = []
     if sink_errors:
         # Tell the user. Previously a failed save was logged and forgotten, so
         # the note looked saved, the ledger said done, and it was never retried.
-        warn = "⚠️ Couldn't save everywhere: " + "; ".join(e[:200] for e in sink_errors)
+        warns.append("⚠️ Couldn't save everywhere: " + "; ".join(e[:200] for e in sink_errors))
+    if media.get("warnings"):
+        # Incomplete source media is a different problem from a failed save, and
+        # used to be invisible: a dropped slide just left a gap in the numbering.
+        warns.append("⚠️ The post's media came back incomplete: "
+                     + "; ".join(media["warnings"]))
+    for warn in warns:
         message += "\n\n" + html.escape(warn)
         rich_md += "<br><br>" + html.escape(warn)
     ledger.put(url, {
@@ -301,7 +374,10 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
         v = _dedupe_vault_by_source(url)
         if n or v:
             log.info("redo cleanup for %s: archived %d notion, removed %d vault dup(s)", url, n, v)
-    return message, rich_md, rich_blocks
+    done = time.monotonic()
+    log.info("timing %s: acquire=%.1fs agent=%.1fs sinks=%.1fs total=%.1fs",
+             url, t_acquired - t0, t_agent - t_acquired, done - t_agent, done - t0)
+    return Result(message, rich_md, rich_blocks, SAVED)
 
 
 def _dedupe_vault_by_source(url: str) -> int:
@@ -365,6 +441,7 @@ def _sanitize(obj: dict) -> dict:
         obj[key] = [v for v in val if isinstance(v, dict)] if isinstance(val, list) else []
     # Exactly one valid folder, always — it decides where the note is filed.
     obj["folder"] = folders.normalize(obj.get("folder"))
+    obj["topics"] = topics.normalize_list(obj.get("topics"))
     return obj
 
 
@@ -784,7 +861,7 @@ async def deliver(bot, chat_id: int, html_msg: str, rich_md: str | None,
                                disable_web_page_preview=True)
 
 
-async def process(bot, chat_id: int, url: str, force: bool) -> None:
+async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "") -> None:
     """One stable status message, edited in place at real milestones (no flaky drafts).
 
     Placeholder → "got transcript" → final note — a single message edited via
@@ -799,8 +876,12 @@ async def process(bot, chat_id: int, url: str, force: bool) -> None:
         log.info("already processing %s — skipping duplicate", norm)
         return
     _in_flight.add(norm)
-    ledger.pending_add(norm, chat_id)
+    ledger.pending_add(norm, chat_id, user_note)
     mid = None
+    # Only a real outcome clears the retry marker. Anything unhandled leaves the
+    # link queued — an exception is the case most worth recovering from, and it
+    # used to be the one case recovery couldn't reach.
+    release = False
     try:
         rich = os.environ.get("RICH_MESSAGE", "1") == "1"
         mid = await _send_rich_id(chat_id, _status_payload("⏳ Working on your reel…")) if rich else None
@@ -811,25 +892,27 @@ async def process(bot, chat_id: int, url: str, force: bool) -> None:
             if mid and stage == "acquired":
                 await _edit_rich(chat_id, mid, _status_payload("✍️ Got it — writing your note…"))
 
-        html_msg, rich_md, rich_blocks = await run_pipeline(url, force=force, on_progress=progress)
+        res = await run_pipeline(url, force=force, on_progress=progress, user_note=user_note)
+        release = not res.keep_queued
 
         # Replace the placeholder in place (no orphaned "Working…" message).
         # Native blocks first, then rich HTML, then a plain fresh send.
-        if mid and await _edit_rich(chat_id, mid, rich_blocks or rich_md or html_msg):
-            return
-        await deliver(bot, chat_id, html_msg, rich_md, rich_blocks)  # fresh-send fallback
+        if not (mid and await _edit_rich(chat_id, mid, res.blocks or res.rich_md or res.html)):
+            await deliver(bot, chat_id, res.html, res.rich_md, res.blocks)
     except Exception as e:  # noqa: BLE001
         # Anything unhandled must still close the loop — otherwise the user is
         # left watching "⏳ Working…" forever with no idea the reel died.
         log.error("processing failed for %s", url, exc_info=e)
-        err = f"❌ That reel broke while processing:\n{type(e).__name__}: {e}\n\nSend /force to retry."
+        err = (f"❌ That reel broke while processing:\n{type(e).__name__}: {e}\n\n"
+               "It stays queued and will retry — or send the link again now.")
         if not (mid and await _edit_rich(chat_id, mid, html.escape(err))):
             try:
                 await bot.send_message(chat_id, err)
             except Exception:  # noqa: BLE001
                 pass
     finally:
-        ledger.pending_remove(norm)
+        if release:
+            ledger.pending_remove(norm)
         _in_flight.discard(norm)
 
 
@@ -847,10 +930,15 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str) -> st
     stamp = hashlib.sha1(url.encode()).hexdigest()[:6]
     fname = f"{today} {safe} [{stamp}].md"
     cats = ", ".join(obj.get("categories") or [])
+    folder = folders.normalize(obj.get("folder"))
+    topic_list = ", ".join(topics.normalize_list(obj.get("topics")))
     tags = " ".join("#" + str(t).strip().replace(" ", "_") for t in (obj.get("tags") or []) if t)
     author = (obj.get("author") or "").strip()
     quote = (obj.get("quote") or "").strip()
+    # folder and topics belong in the file too — the note should say where it
+    # lives and what it's about without depending on the directory it sits in.
     L = ["---", f"source: {url}", f"date: {today}", "type: reel-note",
+         f"folder: {folder}", f"topics: [{topic_list}]",
          f"content_type: {obj.get('content_type', '')}", f"kind: {obj.get('kind', '')}",
          f"categories: [{cats}]", "status: inbox", "---", "", f"# {title}", ""]
     if _ok(quote):
@@ -969,6 +1057,8 @@ _last_url: dict[int, str] = {}  # per-user most recent link, for /force redo
 
 
 async def on_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    if not allowed(update):
+        return
     await update.message.reply_text(
         "Send me a reel / video / article link and I'll turn it into actionable items.\n"
         "Send /force to redo the last one (replaces it, doesn't duplicate).\n"
@@ -992,23 +1082,30 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     if not allowed(update):
         await update.message.reply_text("Not authorized.")
         return
-    urls = URL_RE.findall(update.message.text or "")
+    text = update.message.text or ""
+    urls = URL_RE.findall(text)
     if not urls:
-        await update.message.reply_text("Send me a link (Instagram reel, YouTube, TikTok, article).")
+        await update.message.reply_text("Send me a link (Instagram reel, X post, TikTok, YouTube).")
         return
-    force = "/force" in (update.message.text or "")
+    force = "/force" in text
+    # Anything you type next to the link is why you saved it — worth more than
+    # any line the model can invent, so it becomes the note's "why".
+    user_note = URL_RE.sub("", text).replace("/force", "").strip(" \n-—:·")
+    if len(user_note) < 3:
+        user_note = ""
     _last_url[update.effective_user.id] = urls[-1]
     chat_id = update.effective_chat.id
     # Register EVERY url as pending before processing any of them. Telegram is
     # already acked at this point, so a reel still sitting in the queue when the
     # bot restarts would otherwise be lost with no record of it.
     for url in urls:
-        ledger.pending_add(acquire.normalize_url(url), chat_id)
+        ledger.pending_add(acquire.normalize_url(url), chat_id, user_note)
     if len(urls) > 1:
         await update.message.reply_text(f"📥 Queued {len(urls)} links — working through them one by one.")
     for i, url in enumerate(urls, 1):
-        log.info("processing %s (force=%s, %d/%d)", url, force, i, len(urls))
-        await process(context.bot, chat_id, url, force=force)
+        log.info("processing %s (force=%s, %d/%d)%s", url, force, i, len(urls),
+                 " with your note" if user_note else "")
+        await process(context.bot, chat_id, url, force=force, user_note=user_note)
 
 
 async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1117,13 +1214,17 @@ async def _resume_pending(app) -> None:
                 except Exception:  # noqa: BLE001
                     pass
                 continue
+            if (ledger.get(url) or {}).get("status") == "done":
+                ledger.pending_remove(url)   # finished, just never un-marked
+                continue
             log.info("resuming interrupted reel %s", url)
             try:
-                await app.bot.send_message(chat_id, "↻ Recovering a reel that got interrupted earlier…")
-                await process(app.bot, chat_id, url, force=True)
+                await app.bot.send_message(chat_id, "↻ Recovering a link that got interrupted earlier…")
+                await process(app.bot, chat_id, url, force=True, user_note=rec.get("note", ""))
             except Exception as e:  # noqa: BLE001
+                # Leave it pending: pending_attempt already caps this at
+                # MAX_RESUME_ATTEMPTS, which must stay the only give-up path.
                 log.warning("resume failed for %s: %s", url, e)
-                ledger.pending_remove(url)
 
     asyncio.create_task(_go())  # run after polling starts, don't block startup
 
@@ -1131,8 +1232,9 @@ async def _resume_pending(app) -> None:
 def main() -> None:
     load_env()
     if len(sys.argv) >= 3 and sys.argv[1] == "--test":
-        html_msg, rich_md, rich_blocks = asyncio.run(run_pipeline(sys.argv[2], force=True))
-        print("=== RICH HTML ===\n" + (rich_md or "(none)") + "\n\n=== PLAIN FALLBACK ===\n" + html_msg)
+        res = asyncio.run(run_pipeline(sys.argv[2], force=True))
+        print(f"=== OUTCOME: {res.outcome} ===")
+        print("=== RICH HTML ===\n" + (res.rich_md or "(none)") + "\n\n=== PLAIN FALLBACK ===\n" + res.html)
         return
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:

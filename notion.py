@@ -16,6 +16,7 @@ import os
 import urllib.request
 
 import folders
+import topics
 
 log = logging.getLogger("saved-to-notes.notion")
 
@@ -272,6 +273,7 @@ def push_reel(obj: dict, source_url: str, date_iso: str,
 
     setp("Source", source_url)
     setp("Folder", folders.normalize(obj.get("folder")))
+    setp("Topics", topics.normalize_list(obj.get("topics")))
     setp("Date", date_iso)
     setp("Items", len(items))
     # No "Category" any more. It overlapped Folder and Content type, and having

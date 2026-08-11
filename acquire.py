@@ -28,12 +28,48 @@ TMP = pathlib.Path("/tmp/saved-to-notes")
 # A lot of reels carry their real content on screen (book titles, lists, numbers)
 # rather than in speech. We sample frames from the video so the agent can read them.
 # VIDEO_FRAMES=0 disables it.
-THIN_TRANSCRIPT = 200  # below this, the reel is probably visual-first → sample more
+THIN_TRANSCRIPT = 200   # below this the reel is visual-first — read it properly
+RICH_TRANSCRIPT = 800   # above this the words already carry it — a couple of frames will do
+FRAMES_VISUAL, FRAMES_MIXED, FRAMES_RICH = 8, 4, 2
+
+
+def _frame_count(transcript_len: int) -> int:
+    """How many frames are worth paying for.
+
+    This used to only ever adjust upward, so 40 of 46 measured reels sampled 6
+    frames despite transcripts over 800 characters — roughly 7k tokens each for
+    almost nothing. Now a rich transcript means fewer frames, not more.
+
+    VIDEO_FRAMES caps the result when it is explicitly set; unset means "let the
+    tiers decide" (a default of 6 would otherwise silently block the 8-frame
+    tier that visual-first reels depend on). 0 disables frames entirely.
+    """
+    if transcript_len < THIN_TRANSCRIPT:
+        tier = FRAMES_VISUAL            # little or no speech — the screen IS the content
+    elif transcript_len < RICH_TRANSCRIPT:
+        tier = FRAMES_MIXED
+    else:
+        tier = FRAMES_RICH              # the words already carry it
+    raw = os.environ.get("VIDEO_FRAMES", "").strip()
+    if not raw:
+        return tier
+    try:
+        cap = int(raw)
+    except ValueError:
+        return tier
+    return max(cap, 0) and min(tier, cap)
+
+
 THREAD_MAX_TWEETS = 50  # a thread longer than this is an outlier, not a note
 
 
 class AcquireError(RuntimeError):
-    pass
+    """retryable=False means it can never succeed (deleted, private, no media),
+    so the link is released instead of being retried on every restart."""
+
+    def __init__(self, message: str, retryable: bool = True):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 _IG_RE = re.compile(
@@ -223,6 +259,7 @@ def _acquire_apify_twitter(url: str, token: str) -> dict:
     if not items:
         raise AcquireError("Apify returned nothing for this tweet (deleted, private, or protected?)")
     it = items[0]
+    warnings: list[str] = []
     author_obj = it.get("author") or {}
     caption = _tweet_text(it)
     short = _shortcode(url)
@@ -268,8 +305,10 @@ def _acquire_apify_twitter(url: str, token: str) -> dict:
             except Exception as e:  # noqa: BLE001
                 log.warning("tweet video download failed (%s)", e)
                 video_path = None
-        n = int(os.environ.get("VIDEO_FRAMES", "6"))
+        n = _frame_count(len(caption))
         frames = video_frames(video_path, short, n)
+        if n and len(frames) < n:
+            warnings.append(f"{n - len(frames)} of {n} video frames couldn't be extracted")
         if video_path:
             # No speech-to-text for X, so the file itself is of no further use
             # once frames are extracted.
@@ -287,8 +326,11 @@ def _acquire_apify_twitter(url: str, token: str) -> dict:
             except Exception as e:  # noqa: BLE001
                 log.warning("tweet image %d download failed (%s)", i, e)
 
+    if photos and len(images) < len(photos[:12]):
+        warnings.append(f"{len(photos[:12]) - len(images)} of {len(photos[:12])} "
+                        "images couldn't be downloaded")
     if not (caption or images or frames):
-        raise AcquireError("Tweet had no text or media we could read")
+        raise AcquireError("Tweet had no text or media we could read", retryable=False)
 
     kind = "video" if frames else ("carousel" if len(images) > 1 else
                                    ("image" if images else "article"))
@@ -306,6 +348,7 @@ def _acquire_apify_twitter(url: str, token: str) -> dict:
         "video_path": video_path,
         "images": images,
         "frames": frames,
+        "warnings": warnings,
     }
 
 
@@ -370,6 +413,7 @@ def _acquire_apify_instagram(url: str, token: str) -> dict:
     transcriber = os.environ.get("APIFY_TRANSCRIBER_ACTOR", "apple_yang~instagram-transcripts-scraper").strip()
 
     short = _shortcode(url)
+    warnings: list[str] = []
     transcript, caption, author, video_url, last_err = "", "", None, None, None
     try:
         t = _apify_run(transcriber, {"videoUrl": url}, token)
@@ -416,6 +460,9 @@ def _acquire_apify_instagram(url: str, token: str) -> dict:
                     images.append(p)
                 except Exception as e:  # noqa: BLE001
                     log.warning("image %d download failed (%s)", i, e)
+            if len(images) < len(img_urls[:12]):
+                warnings.append(f"{len(img_urls[:12]) - len(images)} of "
+                                f"{len(img_urls[:12])} slides couldn't be downloaded")
             log.info("%s: downloaded %d image(s)", kind, len(images))
 
     if video_url and not images:
@@ -428,10 +475,10 @@ def _acquire_apify_instagram(url: str, token: str) -> dict:
             video_path = None
         # Sample frames so on-screen text is captured even when the speech
         # doesn't mention it. Visual-first reels (little speech) get more.
-        n = int(os.environ.get("VIDEO_FRAMES", "6"))
-        if len(transcript) < THIN_TRANSCRIPT:
-            n = max(n, 8)
+        n = _frame_count(len(transcript))
         frames = video_frames(video_path, short, n)
+        if n and len(frames) < n:
+            warnings.append(f"{n - len(frames)} of {n} video frames couldn't be extracted")
         if transcript and video_path:
             # Transcript already in hand — the video file itself is only needed
             # for agent-side transcription, so drop it and keep the frames.
@@ -440,7 +487,7 @@ def _acquire_apify_instagram(url: str, token: str) -> dict:
 
     if not (transcript or video_path or images or frames or caption):
         detail = f" ({last_err})" if last_err else ""
-        raise AcquireError(f"Couldn't get anything back for this post — private, removed, or Apify failed{detail}")
+        raise AcquireError(f"Couldn't get anything back for this post — private, removed, or Apify failed{detail}", retryable=False)
 
     return {
         "source_url": url,
@@ -454,6 +501,7 @@ def _acquire_apify_instagram(url: str, token: str) -> dict:
         "video_path": video_path,
         "images": images,
         "frames": frames,
+        "warnings": warnings,
     }
 
 
@@ -505,7 +553,7 @@ def _acquire_ytdlp(url: str) -> dict:
             ) from e
         raise AcquireError(f"yt-dlp failed: {err[-500:]}") from e
     except FileNotFoundError as e:
-        raise AcquireError("yt-dlp is not installed — run: brew install yt-dlp") from e
+        raise AcquireError("yt-dlp is not installed — run: brew install yt-dlp", retryable=False) from e
     except subprocess.TimeoutExpired as e:
         raise AcquireError("yt-dlp timed out after 5 minutes") from e
 
@@ -516,7 +564,7 @@ def _acquire_ytdlp(url: str) -> dict:
         key=lambda p: p.stat().st_mtime, reverse=True,
     )
     video_path = str(vids[0]) if vids else None
-    frames = video_frames(video_path, _shortcode(url), int(os.environ.get("VIDEO_FRAMES", "6")))
+    frames = video_frames(video_path, _shortcode(url), _frame_count(0))
     return {
         "source_url": url,
         "platform": meta.get("extractor_key", "unknown"),
