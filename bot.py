@@ -101,22 +101,32 @@ def _load_prompt() -> str:
 
 
 def _media_context(url: str, media: dict, user_note: str = "") -> str:
-    """The per-reel facts, without any local file paths.
+    """The per-item facts, without any local file paths.
 
     Used by the OpenAI backend, which receives the images attached to the
     request rather than as paths on disk.
     """
-    ctx = [f"URL: {url}", f"Platform: {media.get('platform')}", f"Kind: {media.get('kind')}",
+    kind = media.get("kind")
+    ctx = [f"URL: {url}", f"Platform: {media.get('platform')}", f"Kind: {kind}",
            f"Today's date: {datetime.date.today().isoformat()}"]
+    if media.get("title") and kind == "article":
+        ctx.append(f"Title: {media['title']}")
     if user_note:
         ctx.append(
             "WHY THE USER SAVED THIS (their own words — treat it as the primary lens for what "
             f"to extract, and lead the note toward it):\n{user_note[:600]}")
     if media.get("author"):
         ctx.append(f"Author: {media['author']}")
-    if media.get("caption"):
+    if media.get("caption") and kind != "article":
         ctx.append(f"Caption:\n{media['caption'][:2000]}")
-    if media.get("transcript"):
+    if kind == "article":
+        body = media.get("transcript") or media.get("caption") or ""
+        ctx.append("ARTICLE TEXT (already fetched — do NOT fetch the URL again; write the note "
+                   f"from this):\n{body[:20000]}")
+        if media.get("images"):
+            ctx.append(f"{len(media['images'])} image(s) from the page are attached (hero / "
+                       "inline). Read them for charts, covers, or on-page figures.")
+    elif media.get("transcript"):
         ctx.append("TRANSCRIPT (verbatim spoken audio — do NOT paste it back; use it to "
                    f"write description/summary/items):\n{media['transcript'][:12000]}")
     elif media.get("images"):
@@ -134,18 +144,29 @@ def _media_context(url: str, media: dict, user_note: str = "") -> str:
 
 def build_prompt(url: str, media: dict, user_note: str = "") -> str:
     """Compose the agent prompt with pre-acquired media context."""
-    ctx = [f"URL: {url}", f"Platform: {media.get('platform')}", f"Kind: {media.get('kind')}"]
+    kind = media.get("kind")
+    ctx = [f"URL: {url}", f"Platform: {media.get('platform')}", f"Kind: {kind}"]
+    if media.get("title") and kind == "article":
+        ctx.append(f"Title: {media['title']}")
     if user_note:
         ctx.append(
             "WHY THE USER SAVED THIS (their own words — treat it as the primary lens for what "
             f"to extract, and lead the note toward it):\n{user_note[:600]}")
     if media.get("author"):
         ctx.append(f"Author: {media['author']}")
-    if media.get("caption"):
+    if media.get("caption") and kind != "article":
         ctx.append(f"Caption:\n{media['caption'][:2000]}")
-    if media.get("images"):
+    if kind == "article":
+        body = media.get("transcript") or media.get("caption") or ""
+        ctx.append("ARTICLE TEXT (already fetched — do NOT fetch the URL again, and do NOT "
+                   f"re-summarise from search; write the note from this):\n{body[:20000]}")
+        if media.get("images"):
+            paths = "\n".join(media["images"])
+            ctx.append("Images from the page — Read each with the Read tool (charts, covers, "
+                       f"figures). Fold anything named into `items`:\n{paths}")
+    elif media.get("images"):
         paths = "\n".join(media["images"])
-        label = "CAROUSEL" if media.get("kind") == "carousel" else "PHOTO POST"
+        label = "CAROUSEL" if kind == "carousel" else "PHOTO POST"
         ctx.append(
             f"{label} — there is no audio, so the images ARE the content. Read EACH of these "
             "local image files with the Read tool, capture the verbatim on-screen text + a short "
@@ -284,6 +305,17 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
             outcome = RETRYABLE if getattr(e, "retryable", True) else PERMANENT
             tail = "\n\nStill queued — it'll retry." if outcome == RETRYABLE else ""
             return Result(f"❌ Couldn't fetch that link:\n{e}{tail}", None, None, outcome)
+    elif media.get("video_path") and not (media.get("transcript") or media.get("frames")):
+        # Telegram video: file is already on disk; frames + whisper still to do.
+        try:
+            media = await asyncio.to_thread(
+                acquire.from_local, url=url, video_path=media.get("video_path"),
+                images=media.get("images") or [], caption=media.get("caption") or "",
+                platform=media.get("platform") or "telegram")
+        except acquire.AcquireError as e:
+            outcome = RETRYABLE if getattr(e, "retryable", True) else PERMANENT
+            tail = "\n\nStill queued — it'll retry." if outcome == RETRYABLE else ""
+            return Result(f"❌ Couldn't read that file:\n{e}{tail}", None, None, outcome)
     t_acquired = time.monotonic()
 
     if on_progress:
@@ -534,8 +566,23 @@ def _rec_lines(items: list) -> list[str]:
     return out
 
 
-def _link_line(url: str) -> str:
-    return f'🔗 <a href="{html.escape(url, quote=True)}">Original reel</a>' if url else ""
+def _link_line(url: str, obj: dict | None = None) -> str:
+    if not url or url.startswith("telegram:"):
+        return ""
+    kind = ((obj or {}).get("kind") or "").lower()
+    label = ("Original article" if kind == "article"
+             else "Original post" if kind in ("image", "carousel")
+             else "Original reel")
+    return f'🔗 <a href="{html.escape(url, quote=True)}">{label}</a>'
+
+
+def _details_label(obj: dict) -> str:
+    kind = (obj.get("kind") or "").lower()
+    if kind == "article":
+        return "📄 Full text"
+    if obj.get("slides"):
+        return "📄 Slides"
+    return "📄 Full transcript"
 
 
 def _tags_line(obj: dict) -> str:
@@ -640,7 +687,7 @@ def render_telegram(obj: dict, url: str = "") -> str:
                 lines += [f"{i}. {_esc(s)}" for i, s in enumerate(items, 1)]
     if _ok(obj.get("why_save")):
         lines += ["", f"💾 <i>{_esc(obj['why_save'])}</i>"]
-    for x in (_link_line(url), _tags_line(obj)):
+    for x in (_link_line(url, obj), _tags_line(obj)):
         if x:
             lines.append(x)
     return "\n".join(lines)
@@ -682,13 +729,13 @@ def render_rich(obj: dict, url: str = "", transcript: str = "") -> str:
             blocks.append(f"<{wrap}>" + "".join(f"<li>{x}</li>" for x in li) + f"</{wrap}>")
     if _ok(obj.get("why_save")):
         blocks.append(f"💾 <i>{_esc(obj['why_save'])}</i>")
-    for x in (_link_line(url), _tags_line(obj)):
+    for x in (_link_line(url, obj), _tags_line(obj)):
         if x:
             blocks.append(x)
     body = "<br>".join(blocks)
     detail = _detail_text(obj, transcript)
     if detail:
-        body += f"<details><summary>📄 Full transcript</summary>{detail}</details>"
+        body += f"<details><summary>{_details_label(obj)}</summary>{detail}</details>"
     return body
 
 
@@ -789,15 +836,19 @@ def render_blocks(obj: dict, url: str = "", transcript: str = "") -> dict:
     if _ok(obj.get("why_save")):
         blocks.append({"type": "blockquote",
                        "blocks": [_para_block(f"💾 {obj['why_save'].strip()}")]})
-    if url:
+    if url and not url.startswith("telegram:"):
         blocks.append({"type": "divider"})
-        blocks.append(_para_block([{"type": "url", "text": "🔗 Original reel", "url": url}]))
+        kind = (obj.get("kind") or "").lower()
+        label = ("Original article" if kind == "article"
+                 else "Original post" if kind in ("image", "carousel")
+                 else "Original reel")
+        blocks.append(_para_block([{"type": "url", "text": f"🔗 {label}", "url": url}]))
     detail = _detail_text(obj, transcript)
     if detail:
         # Rebuild from raw text: _detail_text is HTML for the other renderers.
         paras = [p.strip() for p in re.split(r"<br\s*/?>|\n", _plain(detail)) if p.strip()]
         if paras:
-            blocks.append({"type": "details", "summary": "📄 Full transcript",
+            blocks.append({"type": "details", "summary": _details_label(obj),
                            "blocks": [_para_block(p) for p in paras[:60]]})
     tags = [str(t).strip().lstrip("#").replace(" ", "_") for t in (obj.get("tags") or []) if t]
     if tags:
@@ -873,7 +924,8 @@ async def deliver(bot, chat_id: int, html_msg: str, rich_md: str | None,
                                disable_web_page_preview=True)
 
 
-async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "") -> None:
+async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
+                  media: dict | None = None) -> None:
     """One stable status message, edited in place at real milestones (no flaky drafts).
 
     Placeholder → "got transcript" → final note — a single message edited via
@@ -896,7 +948,7 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "")
     release = False
     try:
         rich = os.environ.get("RICH_MESSAGE", "1") == "1"
-        mid = await _send_rich_id(chat_id, _status_payload("⏳ Working on your reel…")) if rich else None
+        mid = await _send_rich_id(chat_id, _status_payload("⏳ Working on it…")) if rich else None
         if mid is None:
             await bot.send_message(chat_id, f"⏳ Processing {url[:80]}…")
 
@@ -904,7 +956,8 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "")
             if mid and stage == "acquired":
                 await _edit_rich(chat_id, mid, _status_payload("✍️ Got it — writing your note…"))
 
-        res = await run_pipeline(url, force=force, on_progress=progress, user_note=user_note)
+        res = await run_pipeline(url, force=force, on_progress=progress, user_note=user_note,
+                                 media=media)
         release = not res.keep_queued
 
         # Replace the placeholder in place (no orphaned "Working…" message).
@@ -1005,7 +1058,8 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str) -> st
                 L += ["", s["text"].strip()]
             L.append("")
     elif transcript.strip():
-        L += ["", "## Transcript", "", transcript.strip(), ""]
+        L += ["", "## Article" if (obj.get("kind") or "") == "article" else "## Transcript",
+              "", transcript.strip(), ""]
     (d / fname).write_text("\n".join(L))
     return f"{folder}/{fname}"
 
@@ -1088,7 +1142,7 @@ async def on_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(f"Not authorized. Your user id: {uid}")
         return
     await update.message.reply_text(
-        "Send me a reel / video / article link and I'll turn it into actionable items.\n"
+        "Send me a link (Instagram, X, YouTube, TikTok, an article) or a photo / video.\n"
         "Send /force to redo the last one (replaces it, doesn't duplicate).\n"
         f"Your user id: {uid}"
     )
@@ -1114,7 +1168,8 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     text = update.message.text or ""
     urls = _extract_urls(text)
     if not urls:
-        await update.message.reply_text("Send me a link (Instagram reel, X post, TikTok, YouTube).")
+        await update.message.reply_text(
+            "Send a link (Instagram, X, YouTube, TikTok, article) or a photo / video.")
         return
     force = "/force" in text
     # Anything you type next to the link is why you saved it — worth more than
@@ -1135,6 +1190,113 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         log.info("processing %s (force=%s, %d/%d)%s", url, force, i, len(urls),
                  " with your note" if user_note else "")
         await process(context.bot, chat_id, url, force=force, user_note=user_note)
+
+
+_album_parts: dict[str, dict] = {}
+_album_tasks: dict[str, asyncio.Task] = {}
+
+
+async def _tg_download(file_obj, dest: Path) -> str:
+    acquire.TMP.mkdir(parents=True, exist_ok=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    await file_obj.download_to_drive(custom_path=str(dest))
+    return str(dest)
+
+
+async def _process_local(bot, chat_id: int, user_id: int, url: str, *,
+                         images=None, video_path=None, caption="", user_note="") -> None:
+    _last_url[user_id] = url
+    ledger.pending_add(url, chat_id, user_note)
+    if video_path:
+        media = {
+            "source_url": url, "platform": "telegram", "kind": "video",
+            "caption": caption, "author": None, "title": caption[:80] or "video",
+            "transcript": "", "detected_language": None,
+            "video_path": video_path, "images": images or [], "frames": [], "warnings": [],
+        }
+    else:
+        media = acquire.from_local(url=url, images=images or [], caption=caption)
+    await process(bot, chat_id, url, force=False, user_note=user_note, media=media)
+
+
+async def on_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not allowed(update):
+        await update.message.reply_text("Not authorized.")
+        return
+    msg = update.message
+    if not msg.photo:
+        return
+    f = await msg.photo[-1].get_file()
+    path = await _tg_download(f, acquire.TMP / f"tg-{f.file_unique_id}.jpg")
+    caption = (msg.caption or "").strip()
+    user_note = caption if len(caption) >= 3 else ""
+    group = msg.media_group_id
+    if not group:
+        await _process_local(context.bot, msg.chat_id, update.effective_user.id,
+                             f"telegram:photo:{f.file_unique_id}",
+                             images=[path], caption=caption, user_note=user_note)
+        return
+    rec = _album_parts.setdefault(group, {
+        "images": [], "caption": "", "chat_id": msg.chat_id,
+        "user_id": update.effective_user.id, "note": user_note,
+    })
+    rec["images"].append(path)
+    if caption:
+        rec["caption"] = caption
+        rec["note"] = user_note
+    prev = _album_tasks.get(group)
+    if prev:
+        prev.cancel()
+    _album_tasks[group] = asyncio.create_task(_flush_album(group, context.bot))
+
+
+async def _flush_album(group: str, bot) -> None:
+    try:
+        await asyncio.sleep(1.2)
+    except asyncio.CancelledError:
+        return
+    rec = _album_parts.pop(group, None)
+    _album_tasks.pop(group, None)
+    if not rec:
+        return
+    await _process_local(bot, rec["chat_id"], rec["user_id"], f"telegram:album:{group}",
+                         images=rec["images"], caption=rec["caption"], user_note=rec["note"])
+
+
+async def on_video(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not allowed(update):
+        await update.message.reply_text("Not authorized.")
+        return
+    msg = update.message
+    vid = msg.video or (msg.document if msg.document and (msg.document.mime_type or "").startswith("video/") else None)
+    if not vid:
+        return
+    f = await vid.get_file()
+    ext = Path(getattr(vid, "file_name", "") or "vid.mp4").suffix or ".mp4"
+    dest = await _tg_download(f, acquire.TMP / f"tg-{f.file_unique_id}{ext}")
+    caption = (msg.caption or "").strip()
+    user_note = caption if len(caption) >= 3 else ""
+    await _process_local(context.bot, msg.chat_id, update.effective_user.id,
+                         f"telegram:video:{f.file_unique_id}",
+                         video_path=dest, caption=caption, user_note=user_note)
+
+
+async def on_image_doc(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    if not allowed(update):
+        await update.message.reply_text("Not authorized.")
+        return
+    msg = update.message
+    doc = msg.document
+    if not doc:
+        return
+    f = await doc.get_file()
+    ext = Path(doc.file_name or "img.jpg").suffix or ".jpg"
+    dest = await _tg_download(f, acquire.TMP / f"tg-{f.file_unique_id}{ext}")
+    caption = (msg.caption or "").strip()
+    user_note = caption if len(caption) >= 3 else ""
+    await _process_local(context.bot, msg.chat_id, update.effective_user.id,
+                         f"telegram:photo:{f.file_unique_id}",
+                         images=[dest], caption=caption, user_note=user_note)
 
 
 async def _on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1271,6 +1433,9 @@ def main() -> None:
     app = Application.builder().token(token).post_init(_resume_pending).build()
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(CommandHandler("force", on_force))
+    app.add_handler(MessageHandler(filters.PHOTO, on_photo))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, on_video))
+    app.add_handler(MessageHandler(filters.Document.IMAGE, on_image_doc))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_error_handler(_on_error)
     log.info("bot running (polling)")

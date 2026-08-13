@@ -332,7 +332,9 @@ def push_reel(obj: dict, source_url: str, date_iso: str,
             for i, s in enumerate(obj["slides"], 1))
         children.append(_toggle("📄 Slides (verbatim text)", slide_text))
     elif transcript.strip():
-        children.append(_toggle("📄 Transcript (verbatim)", transcript.strip()))
+        children.append(_toggle(
+            "📄 Article (verbatim)" if (obj.get("kind") or "") == "article"
+            else "📄 Transcript (verbatim)", transcript.strip()))
 
     ok, err, page_id = _post(
         {"parent": {"database_id": db_id}, "properties": props, "children": children[:100]},

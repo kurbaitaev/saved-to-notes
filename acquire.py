@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 """Acquisition layer: turn a URL into local media + metadata.
 
-Instagram → Apify instagram-scraper (proxied, anti-bot-resistant).
-Everything else → yt-dlp fallback.
+Instagram → Apify (if token) → yt-dlp.
+X/Twitter → Apify (if token) → fxtwitter (free) → yt-dlp.
+YouTube/TikTok → yt-dlp (captions + optional Whisper).
+Direct images → download.
+Everything else → yt-dlp, then an article fetch (trafilatura).
 
 Kept separate from the agent on purpose: acquisition is the fragile,
 infrastructure-heavy part and belongs in deterministic code, not in
-model turns. This module is also what a future hosted backend will call.
+model turns.
 """
 
+import html as html_lib
+import ipaddress
 import json
 import logging
 import os
 import pathlib
 import re
 import shutil
+import socket
 import subprocess
 import time
 import urllib.parse
@@ -77,8 +83,6 @@ _IG_RE = re.compile(
 # Share links carry per-recipient tracking params that would make the same post
 # a different ledger key every time it's shared.
 _TRACKING = re.compile(r"^(igsh|igshid|xmt|slof|utm_[a-z]+|si|feature|fbclid|gclid)$", re.I)
-_STRIP_QUERY_HOSTS = ("threads.com", "threads.net", "tiktok.com", "instagram.com",
-                      "x.com", "twitter.com")
 
 
 def normalize_url(url: str) -> str:
@@ -98,8 +102,7 @@ def normalize_url(url: str) -> str:
         return f"https://x.com/{t.group(1)}/status/{t.group(2)}"
     try:
         parts = urllib.parse.urlsplit(url)
-        if parts.scheme in ("http", "https") and any(
-                parts.netloc.lower().endswith(h) for h in _STRIP_QUERY_HOSTS):
+        if parts.scheme in ("http", "https"):
             kept = [(k, v) for k, v in urllib.parse.parse_qsl(parts.query)
                     if not _TRACKING.match(k)]
             return urllib.parse.urlunsplit(
@@ -356,36 +359,428 @@ def _acquire_apify_twitter(url: str, token: str) -> dict:
     }
 
 
-def acquire(url: str) -> dict:
-    """Return {source_url, platform, caption, author, title, video_path, raw}.
+_IMAGE_EXT = (".jpg", ".jpeg", ".png", ".webp", ".gif", ".avif")
+_MEDIA_HOST_SUFFIXES = (
+    "instagram.com", "tiktok.com", "youtube.com", "youtu.be",
+    "x.com", "twitter.com", "vimeo.com", "twitch.tv",
+)
+_MAX_FETCH = 5 * 1024 * 1024
 
-    video_path may be None if no video could be downloaded (caption-only).
+
+def is_direct_image(url: str) -> bool:
+    path = urllib.parse.urlsplit(url or "").path.lower()
+    return any(path.endswith(ext) for ext in _IMAGE_EXT)
+
+
+def is_media_host(url: str) -> bool:
+    host = (urllib.parse.urlsplit(url or "").netloc or "").lower()
+    return any(host == s or host.endswith("." + s) for s in _MEDIA_HOST_SUFFIXES)
+
+
+def _url_is_safe(url: str) -> bool:
+    """Block file:// and loopback/private targets. Personal bot, but article
+    fetch follows user-supplied URLs, so this is the cheap SSRF fence."""
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if parts.scheme not in ("http", "https"):
+        return False
+    host = (parts.hostname or "").lower()
+    if not host or host == "localhost" or host.endswith(".localhost"):
+        return False
+    try:
+        addrs = {info[4][0] for info in socket.getaddrinfo(host, None)}
+    except socket.gaierror:
+        return True
+    except OSError:
+        return False
+    for a in addrs:
+        ip = ipaddress.ip_address(a)
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+            return False
+    return True
+
+
+def _http_get(url: str, timeout: int = 30) -> bytes:
+    if not _url_is_safe(url):
+        raise AcquireError(f"Refusing to fetch {url} (not a public http(s) URL)", retryable=False)
+    req = urllib.request.Request(url, headers={"User-Agent": _UA, "Accept": "*/*"})
+    with urllib.request.urlopen(req, timeout=timeout) as r:
+        data = r.read(_MAX_FETCH + 1)
+    return data[:_MAX_FETCH]
+
+
+def _http_json(url: str, timeout: int = 30) -> dict:
+    obj = json.loads(_http_get(url, timeout=timeout).decode("utf-8", errors="replace"))
+    return obj if isinstance(obj, dict) else {}
+
+
+def _vtt_text(path: str) -> str:
+    """Strip timestamps/tags from a VTT and drop consecutive duplicate cues
+    (YouTube auto-captions repeat the rolling line)."""
+    lines, last = [], None
+    try:
+        raw = pathlib.Path(path).read_text(errors="replace")
+    except OSError:
+        return ""
+    for s in raw.splitlines():
+        s = s.strip()
+        if (not s or s.startswith(("WEBVTT", "NOTE", "Kind:", "Language:", "Style:"))
+                or "-->" in s or re.fullmatch(r"\d+", s)):
+            continue
+        s = re.sub(r"<[^>]+>", "", s).strip()
+        if s and s != last:
+            lines.append(s)
+            last = s
+    return "\n".join(lines)
+
+
+def _maybe_transcribe(video_path: str | None) -> str:
+    """Spoken transcript without Apify.
+
+    WHISPER=auto (default): OpenAI Whisper API if OPENAI_API_KEY is set (~$0.006/min),
+    else the local `whisper` CLI if installed. WHISPER=0 disables it.
+    """
+    if not video_path or not pathlib.Path(video_path).exists():
+        return ""
+    mode = os.environ.get("WHISPER", "auto").strip().lower()
+    if mode in ("0", "off", "false", "no"):
+        return ""
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if mode in ("auto", "openai", "1", "yes", "true") and key:
+        try:
+            text = _transcribe_openai(video_path, key)
+            if text:
+                log.info("whisper (openai): %d chars", len(text))
+                return text
+        except Exception as e:  # noqa: BLE001
+            log.warning("openai whisper failed (%s)", e)
+            if mode == "openai":
+                return ""
+    if mode in ("auto", "local"):
+        try:
+            text = _transcribe_local(video_path)
+            if text:
+                log.info("whisper (local): %d chars", len(text))
+                return text
+        except Exception as e:  # noqa: BLE001
+            log.warning("local whisper failed (%s)", e)
+    return ""
+
+
+def _audio_mp3(video_path: str) -> str:
+    out = str(pathlib.Path(video_path).with_suffix(".mp3"))
+    subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", video_path,
+         "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", out],
+        check=True, capture_output=True, timeout=120)
+    return out
+
+
+def _transcribe_openai(video_path: str, key: str) -> str:
+    from openai import OpenAI
+    audio = _audio_mp3(video_path)
+    try:
+        if pathlib.Path(audio).stat().st_size > 24 * 1024 * 1024:
+            log.warning("audio too large for whisper API")
+            return ""
+        client = OpenAI(api_key=key, timeout=120.0)
+        with open(audio, "rb") as f:
+            r = client.audio.transcriptions.create(model="whisper-1", file=f)
+        return (getattr(r, "text", None) or "").strip()
+    finally:
+        pathlib.Path(audio).unlink(missing_ok=True)
+
+
+def _transcribe_local(video_path: str) -> str:
+    exe = shutil.which("whisper")
+    if not exe:
+        return ""
+    outdir = str(TMP)
+    model = os.environ.get("WHISPER_MODEL", "base").strip() or "base"
+    subprocess.run(
+        [exe, video_path, "--model", model, "--output_format", "txt",
+         "--output_dir", outdir],
+        check=True, capture_output=True, timeout=600)
+    txt = TMP / f"{pathlib.Path(video_path).stem}.txt"
+    return txt.read_text(errors="replace").strip() if txt.exists() else ""
+
+
+def _acquire_image(url: str) -> dict:
+    short = _shortcode(url)
+    ext = pathlib.Path(urllib.parse.urlsplit(url).path).suffix.lower() or ".jpg"
+    if ext not in _IMAGE_EXT:
+        ext = ".jpg"
+    dest = str(TMP / f"{short}{ext}")
+    try:
+        _download(url, dest)
+    except Exception as e:  # noqa: BLE001
+        raise AcquireError(f"Couldn't download that image: {e}") from e
+    if not pathlib.Path(dest).stat().st_size:
+        raise AcquireError("Image download was empty", retryable=False)
+    host = (urllib.parse.urlsplit(url).netloc or "").lower().removeprefix("www.")
+    log.info("direct image: %s", dest)
+    return {
+        "source_url": url, "platform": host or "web", "kind": "image",
+        "caption": "", "author": None,
+        "title": pathlib.Path(urllib.parse.urlsplit(url).path).name or short,
+        "transcript": "", "detected_language": None, "video_path": None,
+        "images": [dest], "frames": [], "warnings": [],
+    }
+
+
+def _acquire_fxtwitter(url: str) -> dict:
+    """Free, no-auth tweet fetch via api.fxtwitter.com (FxEmbed).
+
+    Covers text/photo/video tweets without APIFY_TOKEN. Unofficial — if it
+    dies, yt-dlp is the next fallback.
+    """
+    m = _TWEET_RE.search(url or "")
+    if not m:
+        raise AcquireError("Not a tweet URL", retryable=False)
+    handle, tid = m.group(1), m.group(2)
+    data = _http_json(f"https://api.fxtwitter.com/{handle}/status/{tid}", timeout=30)
+    tweet = data.get("tweet") or data.get("status") or {}
+    if not tweet:
+        raise AcquireError("fxtwitter returned nothing for this tweet")
+    text = (tweet.get("text") or tweet.get("raw_text") or "").strip()
+    quoted = tweet.get("quote") if isinstance(tweet.get("quote"), dict) else {}
+    qtext = (quoted.get("text") or "").strip()
+    if qtext:
+        text = f"{text}\n\nQuoted: {qtext}".strip()
+    author_obj = tweet.get("author") or {}
+    handle_out = author_obj.get("screen_name") or author_obj.get("userName") or handle
+    media = tweet.get("media") or {}
+    photos = [p for p in (media.get("photos") or []) if isinstance(p, dict)]
+    videos = [v for v in (media.get("videos") or []) if isinstance(v, dict)]
+    short = _shortcode(url)
+    images, video_path, frames, warnings, transcript = [], None, [], [], ""
+
+    if videos:
+        vurl = videos[0].get("url")
+        if vurl:
+            video_path = str(TMP / f"{short}.mp4")
+            try:
+                _download(vurl, video_path, timeout=120)
+            except Exception as e:  # noqa: BLE001
+                log.warning("fxtwitter video download failed (%s)", e)
+                video_path = None
+        transcript = _maybe_transcribe(video_path) if video_path else ""
+        n = _frame_count(len(transcript) or len(text))
+        frames = video_frames(video_path, short, n)
+        if n and len(frames) < n:
+            warnings.append(f"{n - len(frames)} of {n} video frames couldn't be extracted")
+        if video_path and (transcript or frames):
+            pathlib.Path(video_path).unlink(missing_ok=True)
+            video_path = None
+    else:
+        for i, p in enumerate(photos[:12]):
+            src = p.get("url")
+            if not src:
+                continue
+            dest = str(TMP / f"{short}-slide{i}.jpg")
+            try:
+                _download(src, dest)
+                images.append(dest)
+            except Exception as e:  # noqa: BLE001
+                log.warning("fxtwitter image %d failed (%s)", i, e)
+        if photos and len(images) < len(photos[:12]):
+            warnings.append(f"{len(photos[:12]) - len(images)} of {len(photos[:12])} "
+                            "images couldn't be downloaded")
+
+    if not (text or images or frames or video_path):
+        raise AcquireError("Tweet had no text or media we could read", retryable=False)
+    kind = ("video" if frames or video_path else
+            "carousel" if len(images) > 1 else
+            "image" if images else "article")
+    log.info("tweet via fxtwitter: %d char(s), %d image(s), %d frame(s)",
+             len(text), len(images), len(frames))
+    return {
+        "source_url": url, "platform": "twitter", "kind": kind,
+        "caption": text, "author": handle_out, "title": text[:80] or short,
+        "transcript": transcript, "detected_language": tweet.get("lang"),
+        "video_path": video_path, "images": images, "frames": frames, "warnings": warnings,
+    }
+
+
+_OG = re.compile(
+    r'<meta[^>]+(?:property|name)=["\']og:(title|description|image|site_name)["\'][^>]+content=["\']([^"\']+)',
+    re.I)
+_OG2 = re.compile(
+    r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:(title|description|image|site_name)["\']',
+    re.I)
+_TITLE_RE = re.compile(r"<title[^>]*>([^<]+)</title>", re.I)
+_IMG_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)["\']', re.I)
+
+
+def _extract_article(html: str, url: str) -> dict:
+    try:
+        import trafilatura
+        text = trafilatura.extract(html, url=url, include_comments=False, include_tables=False) or ""
+        meta = trafilatura.extract_metadata(html, default_url=url)
+        return {
+            "text": (text or "").strip(),
+            "title": ((meta.title if meta else None) or "").strip(),
+            "author": ((meta.author if meta else None) or "").strip(),
+            "description": ((meta.description if meta else None) or "").strip(),
+            "image": ((meta.image if meta else None) or "").strip(),
+            "sitename": ((meta.sitename if meta else None) or "").strip(),
+        }
+    except Exception as e:  # noqa: BLE001
+        log.debug("trafilatura unavailable/failed (%s) — naive extract", e)
+        return _extract_article_naive(html)
+
+
+def _extract_article_naive(html: str) -> dict:
+    og: dict[str, str] = {}
+    for m in _OG.finditer(html):
+        og.setdefault(m.group(1).lower(), html_lib.unescape(m.group(2)).strip())
+    for m in _OG2.finditer(html):
+        og.setdefault(m.group(2).lower(), html_lib.unescape(m.group(1)).strip())
+    title = og.get("title") or ""
+    if not title:
+        tm = _TITLE_RE.search(html)
+        title = html_lib.unescape(tm.group(1)).strip() if tm else ""
+    am = re.search(r"<article\b[^>]*>([\s\S]*?)</article>", html, re.I)
+    chunk = am.group(1) if am else html
+    chunk = re.sub(r"<script[\s\S]*?</script>|<style[\s\S]*?</style>", " ", chunk, flags=re.I)
+    chunk = re.sub(r"<[^>]+>", " ", chunk)
+    text = re.sub(r"\s+", " ", html_lib.unescape(chunk)).strip()
+    return {
+        "text": text, "title": title, "author": "",
+        "description": og.get("description") or "",
+        "image": og.get("image") or "",
+        "sitename": og.get("site_name") or "",
+    }
+
+
+def _acquire_article(url: str) -> dict:
+    html = _http_get(url, timeout=30).decode("utf-8", errors="replace")
+    extracted = _extract_article(html, url)
+    text = (extracted.get("text") or "").strip()
+    desc = (extracted.get("description") or "").strip()
+    title = (extracted.get("title") or "").strip()
+    if not title:
+        title = urllib.parse.urlsplit(url).path.rstrip("/").rsplit("/", 1)[-1] or url
+    if not (text or desc):
+        raise AcquireError(
+            "Couldn't extract any text from that page (paywall, login wall, or not an article?)",
+            retryable=False)
+    body = text or desc
+    short = _shortcode(url)
+    img_urls: list[str] = []
+    if extracted.get("image"):
+        img_urls.append(urllib.parse.urljoin(url, extracted["image"]))
+    for m in _IMG_RE.finditer(html):
+        src = urllib.parse.urljoin(url, m.group(1))
+        path = urllib.parse.urlsplit(src).path.lower()
+        if src not in img_urls and any(path.endswith(ext) for ext in _IMAGE_EXT):
+            img_urls.append(src)
+        if len(img_urls) >= 4:
+            break
+    images, warnings = [], []
+    for i, src in enumerate(img_urls[:4]):
+        if not _url_is_safe(src):
+            continue
+        dest = str(TMP / f"{short}-img{i}.jpg")
+        try:
+            _download(src, dest)
+            if pathlib.Path(dest).stat().st_size > 0:
+                images.append(dest)
+        except Exception as e:  # noqa: BLE001
+            log.warning("article image %d failed (%s)", i, e)
+    host = (extracted.get("sitename")
+            or urllib.parse.urlsplit(url).netloc.lower().removeprefix("www."))
+    log.info("article: %d chars, %d image(s) from %s", len(body), len(images), host)
+    return {
+        "source_url": url, "platform": host, "kind": "article",
+        "caption": desc[:2000], "author": extracted.get("author") or None,
+        "title": title[:200], "transcript": body[:40000],
+        "detected_language": None, "video_path": None,
+        "images": images, "frames": [], "warnings": warnings,
+    }
+
+
+def from_local(*, url: str, images: list | None = None, video_path: str | None = None,
+               caption: str = "", platform: str = "telegram") -> dict:
+    """Turn already-downloaded files (Telegram photo/video) into an acquire() result."""
+    TMP.mkdir(parents=True, exist_ok=True)
+    images = [p for p in (images or []) if p]
+    transcript, frames, warnings = "", [], []
+    if video_path:
+        transcript = _maybe_transcribe(video_path)
+        n = _frame_count(len(transcript))
+        frames = video_frames(video_path, _shortcode(url), n)
+        if n and len(frames) < n:
+            warnings.append(f"{n - len(frames)} of {n} video frames couldn't be extracted")
+        if transcript or frames:
+            pathlib.Path(video_path).unlink(missing_ok=True)
+            video_path = None
+    kind = ("video" if frames or video_path else
+            "carousel" if len(images) > 1 else
+            "image" if images else "article")
+    if not (images or frames or video_path or caption):
+        raise AcquireError("Nothing to save from that message", retryable=False)
+    return {
+        "source_url": url, "platform": platform, "kind": kind,
+        "caption": caption or "", "author": None,
+        "title": (caption[:80] if caption else kind),
+        "transcript": transcript, "detected_language": None,
+        "video_path": video_path, "images": images, "frames": frames, "warnings": warnings,
+    }
+
+
+def acquire(url: str) -> dict:
+    """Return {source_url, platform, caption, author, title, video_path, images, ...}.
+
+    video_path may be None (caption-only, photo, or article).
     Raises AcquireError on hard failure.
     """
     TMP.mkdir(parents=True, exist_ok=True)
     sweep_stale()
+    if is_direct_image(url):
+        return _acquire_image(url)
     token = os.environ.get("APIFY_TOKEN", "").strip()
     if is_instagram(url) and token:
-        # Apify is the paid-but-reliable path (it also returns a spoken transcript).
-        # If it fails, yt-dlp still gets the media — better a note without speech
-        # than no note at all.
         try:
             return _acquire_apify_instagram(url, token)
         except AcquireError as e:
             log.warning("Apify path failed (%s) — falling back to yt-dlp", e)
             return _acquire_ytdlp(url)
-    if is_twitter(url) and token:
-        # yt-dlp only handles tweets that contain video; Apify covers text and
-        # photo tweets too. Still fall back, since yt-dlp needs no token.
+    if is_twitter(url):
+        if token:
+            try:
+                return _acquire_apify_twitter(url, token)
+            except AcquireError as e:
+                log.warning("tweet actor failed (%s) — trying free fallback", e)
         try:
-            return _acquire_apify_twitter(url, token)
-        except AcquireError as e:
-            log.warning("tweet actor failed (%s) — falling back to yt-dlp", e)
+            return _acquire_fxtwitter(url)
+        except Exception as e:  # noqa: BLE001
+            log.warning("fxtwitter failed (%s) — falling back to yt-dlp", e)
             return _acquire_ytdlp(url)
-    if is_instagram(url) and not token:
-        log.info("No APIFY_TOKEN — using yt-dlp (no spoken transcript; "
-                 "notes rely on the caption and on-screen text)")
-    return _acquire_ytdlp(url)
+    if is_instagram(url):
+        log.info("No APIFY_TOKEN — yt-dlp + whisper/frames (no Apify transcript)")
+        return _acquire_ytdlp(url)
+    # YouTube / TikTok / random URLs: media first, article if that yields nothing.
+    try:
+        media = _acquire_ytdlp(url)
+    except AcquireError as e:
+        if is_media_host(url):
+            raise
+        log.info("no media at %s (%s) — fetching as article", url, e)
+        try:
+            return _acquire_article(url)
+        except AcquireError as e2:
+            raise AcquireError(f"{e}; article fetch: {e2}") from e2
+    if (media.get("video_path") or media.get("images") or media.get("frames")
+            or media.get("transcript") or is_media_host(url)):
+        return media
+    log.info("yt-dlp returned metadata only — fetching as article")
+    try:
+        return _acquire_article(url)
+    except AcquireError:
+        return media
 
 
 # --- Apify ---------------------------------------------------------------
@@ -526,19 +921,27 @@ def _carousel_images(it: dict) -> list:
 
 # --- yt-dlp fallback -----------------------------------------------------
 
+_VIDEO_EXT = {".mp4", ".mkv", ".webm", ".mov", ".m4a"}
+_IMG_FILE_EXT = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+
+
 def _acquire_ytdlp(url: str) -> dict:
     # Own directory per run: globbing the shared TMP could pick up a *different*
     # reel's leftover video and attach it to this note.
     run_dir = TMP / f"ytdlp-{_shortcode(url)}"
     run_dir.mkdir(parents=True, exist_ok=True)
-    out_tmpl = str(run_dir / "%(id)s.%(ext)s")
+    # autonumber so a carousel doesn't overwrite itself as %(id)s.jpg.
+    out_tmpl = str(run_dir / "%(id)s-%(autonumber)s.%(ext)s")
     try:
         subprocess.run(
-            ["yt-dlp", "-o", out_tmpl, "--write-info-json", "--no-playlist", url],
+            ["yt-dlp", "-o", out_tmpl, "--write-info-json", "--no-playlist",
+             "--write-subs", "--write-auto-subs", "--sub-langs", "en.*,en",
+             "--convert-subs", "vtt", url],
             cwd=run_dir, check=True, capture_output=True, text=True, timeout=300,
         )
     except subprocess.CalledProcessError as e:
         err = e.stderr or ""
+        low = err.lower()
         # Instagram's extractor was reworked in yt-dlp 2026.07.04; older builds
         # fail this exact way on public reels, and the fix is just an upgrade.
         if "empty media response" in err:
@@ -553,11 +956,13 @@ def _acquire_ytdlp(url: str) -> dict:
                 "or yt-dlp's Instagram support just broke again (it does periodically). "
                 "Try `brew upgrade yt-dlp`; if it's already current, wait for a fix."
             ) from e
-        if "login" in err.lower() or "rate-limit" in err.lower():
+        if "login" in low or "rate-limit" in low:
             raise AcquireError(
                 "Instagram refused the request (rate limit or login wall). Wait a few "
                 "minutes and retry. Don't add cookies — that risks your account."
             ) from e
+        if "unsupported url" in low or "no video" in low:
+            raise AcquireError("yt-dlp: no media at this URL", retryable=False) from e
         raise AcquireError(f"yt-dlp failed: {err[-500:]}") from e
     except FileNotFoundError as e:
         raise AcquireError("yt-dlp is not installed — run: brew install yt-dlp", retryable=False) from e
@@ -567,25 +972,50 @@ def _acquire_ytdlp(url: str) -> dict:
     info = sorted(run_dir.glob("*.info.json"), key=lambda p: p.stat().st_mtime, reverse=True)
     meta = json.loads(info[0].read_text()) if info else {}
     vids = sorted(
-        [p for p in run_dir.glob("*") if p.suffix in {".mp4", ".mkv", ".webm"}],
+        [p for p in run_dir.iterdir() if p.is_file() and p.suffix.lower() in _VIDEO_EXT],
         key=lambda p: p.stat().st_mtime, reverse=True,
     )
+    pics = sorted(
+        [p for p in run_dir.iterdir() if p.is_file() and p.suffix.lower() in _IMG_FILE_EXT],
+        key=lambda p: p.stat().st_mtime,
+    )
     video_path = str(vids[0]) if vids else None
-    n = _frame_count(0)   # no transcript on this path — the screen carries it
+    # Video posts: frames carry on-screen text; a poster thumbnail is redundant.
+    images = [] if video_path else [str(p) for p in pics[:12]]
+
+    transcript = ""
+    subs = sorted(run_dir.glob("*.vtt"), key=lambda p: p.stat().st_mtime, reverse=True)
+    if subs:
+        transcript = _vtt_text(str(subs[0]))
+        if transcript:
+            log.info("captions via yt-dlp (%d chars)", len(transcript))
+    if video_path and not transcript:
+        transcript = _maybe_transcribe(video_path)
+
+    n = _frame_count(len(transcript))
     frames = video_frames(video_path, _shortcode(url), n)
     warnings = ([f"{n - len(frames)} of {n} video frames couldn't be extracted"]
                 if n and len(frames) < n else [])
+    if transcript and video_path:
+        pathlib.Path(video_path).unlink(missing_ok=True)
+        video_path = None
+    kind = ("video" if frames or video_path else
+            "carousel" if len(images) > 1 else
+            "image" if images else "article")
+    if not (transcript or video_path or images or frames
+            or (meta.get("description") or meta.get("title"))):
+        raise AcquireError("yt-dlp got nothing usable from this URL")
     return {
         "source_url": url,
         "platform": meta.get("extractor_key", "unknown"),
-        "kind": "video",
-        "caption": meta.get("description", ""),
+        "kind": kind,
+        "caption": meta.get("description", "") or "",
         "author": meta.get("uploader") or meta.get("channel"),
         "title": meta.get("title", url),
-        "transcript": "",  # yt-dlp path: agent transcribes the video file itself
+        "transcript": transcript,
         "detected_language": None,
         "video_path": video_path,
-        "images": [],
+        "images": images,
         "frames": frames,
         "warnings": warnings,
     }
