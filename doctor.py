@@ -117,12 +117,22 @@ def main() -> int:
     else:
         say(OK, f"yt-dlp {ver}", "Instagram works without an account")
     optional(bool(env("APIFY_TOKEN")), "APIFY_TOKEN (paid)",
-             "no speech transcript — notes rely on the caption and on-screen text",
-             "reels get a spoken transcript")
+             "no IG speech transcript unless Whisper is on — notes rely on captions/frames",
+             "reels get a spoken transcript from Apify")
+    try:
+        import trafilatura  # noqa: F401
+        say(OK, "trafilatura", "article extraction")
+    except ImportError:
+        say(OPT, "trafilatura", "without it: articles use a naive HTML strip — pip install -r requirements.txt")
 
     print("\nOptional\n")
     optional(bool(shutil.which("ffmpeg")) and bool(shutil.which("ffprobe")), "ffmpeg",
              "no video frames, so text shown on screen is missed", "frame sampling works")
+    whisper = env("WHISPER").lower() not in ("0", "off", "false", "no")
+    has_whisper = bool(env("OPENAI_API_KEY")) or bool(shutil.which("whisper"))
+    optional(whisper and has_whisper, "Whisper (speech → text)",
+             "talking-head reels have no spoken transcript without Apify",
+             "OpenAI Whisper API" if env("OPENAI_API_KEY") else ("local whisper CLI" if shutil.which("whisper") else "off"))
     optional(bool(env("NOTION_TOKEN") and env("NOTION_DATABASE_ID")), "Notion",
              "notes only go to the local vault + Telegram", "notes sync to Notion")
 

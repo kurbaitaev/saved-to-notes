@@ -2,8 +2,12 @@
 python-telegram-bot>=22.8
 
 # Only needed for the OpenAI backend (OPENAI_API_KEY). The Claude Code CLI
-# backend doesn't use it.
+# backend doesn't use it. Also used for optional Whisper transcription.
 openai>=2.52.0
+
+# Article extraction (Substack, blogs, news). Falls back to a naive HTML strip
+# if this isn't installed, but the notes will be worse.
+trafilatura>=2.0.0
 
 # Not installable via pip — see README, and run `python3 doctor.py` to check:
 #   claude    Claude Code CLI   https://claude.com/product/claude-code  (only for the CLI backend)
