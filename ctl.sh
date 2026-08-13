@@ -3,7 +3,10 @@
 # Usage: ./ctl.sh {install|start|stop|restart|status|logs|tail}
 set -e
 HERE="$(cd "$(dirname "$0")" && pwd)"
-# Defaults to com.<your-username>.saved-to-notes; override with SERVICE_LABEL.
+# Prefer SERVICE_LABEL from the environment, then .env, then the username default.
+if [ -z "${SERVICE_LABEL:-}" ] && [ -f "$HERE/.env" ]; then
+  SERVICE_LABEL="$(grep -E '^SERVICE_LABEL=' "$HERE/.env" | tail -1 | cut -d= -f2- | tr -d "\"'" || true)"
+fi
 LABEL="${SERVICE_LABEL:-com.$(id -un).saved-to-notes}"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
