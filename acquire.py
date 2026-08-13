@@ -379,8 +379,15 @@ def acquire(url: str) -> dict:
             log.warning("tweet actor failed (%s) — falling back to yt-dlp", e)
             return _acquire_ytdlp(url)
     if is_instagram(url) and not token:
-        log.info("No APIFY_TOKEN — using yt-dlp (no spoken transcript; "
-                 "notes rely on the caption and on-screen text)")
+        try:
+            import transcribe_local
+            has_local = transcribe_local.available()
+        except Exception:
+            has_local = False
+        log.info("No APIFY_TOKEN — using yt-dlp (%s)",
+                 "spoken transcript via local Whisper" if has_local else
+                 "no spoken transcript; notes rely on the caption and on-screen "
+                 "text. pip install openai-whisper to transcribe locally")
     return _acquire_ytdlp(url)
 
 
@@ -564,7 +571,20 @@ def _acquire_ytdlp(url: str) -> dict:
         key=lambda p: p.stat().st_mtime, reverse=True,
     )
     video_path = str(vids[0]) if vids else None
-    n = _frame_count(0)   # no transcript on this path — the screen carries it
+
+    # Free local speech-to-text. This is the only thing the yt-dlp path used to
+    # lack, and it is why APIFY_TOKEN was effectively required for talking-head
+    # reels. Whisper scores 97-98% against the paid transcript and returns ""
+    # rather than guess when the audio is music (see transcribe_local.py).
+    transcript = ""
+    if video_path:
+        try:
+            import transcribe_local
+            transcript = transcribe_local.transcribe(video_path)
+        except Exception as e:  # never let transcription break acquisition
+            log.warning("local transcription skipped (%s)", e)
+
+    n = _frame_count(len(transcript))
     frames = video_frames(video_path, _shortcode(url), n)
     warnings = ([f"{n - len(frames)} of {n} video frames couldn't be extracted"]
                 if n and len(frames) < n else [])
@@ -575,7 +595,7 @@ def _acquire_ytdlp(url: str) -> dict:
         "caption": meta.get("description", ""),
         "author": meta.get("uploader") or meta.get("channel"),
         "title": meta.get("title", url),
-        "transcript": "",  # yt-dlp path: agent transcribes the video file itself
+        "transcript": transcript,
         "detected_language": None,
         "video_path": video_path,
         "images": [],
