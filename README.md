@@ -108,7 +108,13 @@ Everything optional lives in [.env.example](.env.example) with comments. The one
 
 ### Free vs. paid
 
-**It runs with no paid services at all.** yt-dlp fetches public reels anonymously, ffmpeg samples the frames, and the agent reads them. What you lose without `APIFY_TOKEN` is the **spoken transcript** — notes are built from the caption and on-screen text, and the note says so plainly instead of pretending. For a lot of reels (lists, carousels, text-on-screen) that's barely a downgrade; for a talking-head interview it is.
+**It runs with no paid services at all.** yt-dlp fetches public reels anonymously, ffmpeg samples the frames, and the agent reads them.
+
+The **spoken transcript** used to be the one thing you lost without `APIFY_TOKEN`. It isn't any more — `pip install openai-whisper` and [transcribe_local.py](transcribe_local.py) transcribes on your machine, free. Benchmarked at **97.4–98.4%** word similarity against the paid transcript, and on the one reel where they disagreed the local transcript was the correct one. See [docs/local-transcription.md](docs/local-transcription.md).
+
+It refuses to guess: on a silent reel with background music Whisper will happily "transcribe" the song lyrics as speech, so `transcribe()` gates on confidence and returns nothing instead. A note that says "no speech detected" beats a note quoting a rap verse as the creator's words.
+
+What still needs `APIFY_TOKEN`: Instagram **play counts** (yt-dlp returns `view_count: None`) and enumerating a whole profile. Neither matters for single-link notes.
 
 yt-dlp's Instagram support **needs 2026.07.04 or newer** — older builds fail with "empty media response". `doctor.py` checks the version for you.
 
@@ -142,7 +148,7 @@ The bot's own logs are gitignored, and `.env` is never committed. Telegram reque
 ## Limitations
 
 - **macOS only.** The service layer is launchd; the rest is portable but untested elsewhere.
-- **Instagram and X are first-class.** Instagram uses Apify (spoken transcript) with yt-dlp as fallback; X/Twitter uses Apify's tweet scraper, which handles text, photo and video posts — yt-dlp only understands tweets containing video. YouTube and TikTok go through yt-dlp and mostly work. **Plain articles and newsletters don't yet** — anything with no video fails, since nothing fetches the page text.
+- **Instagram and X are first-class.** Instagram uses Apify with yt-dlp as fallback (the fallback now transcribes locally, so it is no longer a downgrade for speech); X/Twitter uses Apify's tweet scraper, which handles text, photo and video posts — yt-dlp only understands tweets containing video. YouTube and TikTok go through yt-dlp and mostly work. **Plain articles and newsletters don't yet** — anything with no video fails, since nothing fetches the page text.
 - **Acquisition breaks periodically.** Instagram changes things; yt-dlp catches up within days. Keep it updated.
 - **Single user.** One person, one machine, a JSON-file ledger. Sharing it with friends means one install each.
 - Verified links are checked by an LLM with web search. ✅ means it found a canonical page — not a human guarantee.
