@@ -18,7 +18,6 @@ import urllib.parse
 import urllib.request
 
 PROJ = pathlib.Path(__file__).resolve().parent
-LABEL = "com.kurbaitaev.saved-to-notes"
 LOG = PROJ / "logs" / "bot.err.log"
 HEARTBEAT = PROJ / "logs" / "heartbeat"  # bot touches this every 60s while polling
 WLOG = PROJ / "logs" / "watchdog.log"
@@ -65,9 +64,18 @@ def alert(token: str, chat: str, text: str) -> None:
 IS_MAC = sys.platform == "darwin"
 
 
+def _service_label() -> str:
+    """Must match install.sh / ctl.sh, otherwise kickstart restarts nothing.
+
+    Was hardcoded to the author's machine, so a clone with a different
+    username (or SERVICE_LABEL) had a watchdog that couldn't restart the bot.
+    """
+    return (os.environ.get("SERVICE_LABEL") or "").strip() or f"com.{os.environ.get('USER', 'user')}.saved-to-notes"
+
+
 def restart() -> None:
     if IS_MAC:
-        cmd = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LABEL}"]
+        cmd = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{_service_label()}"]
     else:  # systemd handles restarts itself, but kick it if we're called anyway
         cmd = ["systemctl", "--user", "restart", "saved-to-notes.service"]
     subprocess.run(cmd, capture_output=True, text=True, check=False)

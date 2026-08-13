@@ -142,6 +142,44 @@ def test_tracking_params_stripped_but_real_params_kept():
     assert acquire.normalize_url("https://example.com/a?q=keep") == "https://example.com/a?q=keep"
 
 
+def test_apify_does_not_put_the_token_in_the_url():
+    import inspect
+    src = inspect.getsource(acquire._apify_run)
+    assert "run-sync-get-dataset-items?token=" not in src
+    assert "Authorization" in src and "Bearer" in src
+
+
+def test_instagram_host_check_does_not_match_query_strings():
+    assert acquire.is_instagram("https://www.instagram.com/reel/ABC/")
+    assert acquire.is_instagram("https://instagram.com/p/ABC/")
+    assert not acquire.is_instagram("https://evil.example/share?u=https://instagram.com/reel/X")
+    assert not acquire.is_instagram("https://example.com/?q=instagram.com")
+
+
+def test_ytdlp_version_compare_is_numeric():
+    """String compare treated 2026.6.1 as newer than 2026.07.04."""
+    real = acquire._ytdlp_version
+    try:
+        acquire._ytdlp_version = lambda: "2026.6.1"
+        assert acquire._ytdlp_too_old() is True
+        acquire._ytdlp_version = lambda: "2026.7.4"
+        assert acquire._ytdlp_too_old() is False
+        acquire._ytdlp_version = lambda: "2026.07.04"
+        assert acquire._ytdlp_too_old() is False
+        acquire._ytdlp_version = lambda: ""
+        assert acquire._ytdlp_too_old() is False  # unknown → don't blame it
+    finally:
+        acquire._ytdlp_version = real
+
+
+def test_trailing_punctuation_is_stripped_from_pasted_urls():
+    assert bot._extract_urls("see https://x.com/a/status/1.") == ["https://x.com/a/status/1"]
+    assert bot._extract_urls("(https://www.instagram.com/reel/ABC/)") == [
+        "https://www.instagram.com/reel/ABC/"]
+    assert bot._extract_urls("https://x.com/a/status/1, https://x.com/b/status/2!") == [
+        "https://x.com/a/status/1", "https://x.com/b/status/2"]
+
+
 # --- acquisition branches ------------------------------------------------
 
 def _stub_apify(item):
@@ -459,6 +497,21 @@ def test_openai_backend_is_off_without_a_key():
     finally:
         if saved:
             os.environ["OPENAI_API_KEY"] = saved
+
+
+def test_watchdog_label_follows_env_not_the_authors_machine():
+    import os
+    import watchdog
+    saved = os.environ.pop("SERVICE_LABEL", None)
+    user = os.environ.get("USER", "user")
+    try:
+        assert watchdog._service_label() == f"com.{user}.saved-to-notes"
+        os.environ["SERVICE_LABEL"] = "com.example.saved-to-notes"
+        assert watchdog._service_label() == "com.example.saved-to-notes"
+    finally:
+        os.environ.pop("SERVICE_LABEL", None)
+        if saved is not None:
+            os.environ["SERVICE_LABEL"] = saved
 
 
 # --- notion --------------------------------------------------------------

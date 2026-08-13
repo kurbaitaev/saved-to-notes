@@ -224,7 +224,11 @@ def cleanup(media: dict) -> None:
 
 
 def is_instagram(url: str) -> bool:
-    return "instagram.com" in url
+    try:
+        host = urllib.parse.urlsplit(url or "").netloc.lower()
+        return host == "instagram.com" or host.endswith(".instagram.com")
+    except ValueError:
+        return False
 
 
 _TWEET_RE = re.compile(r"(?:twitter|x)\.com/([A-Za-z0-9_]+)/status/(\d+)")
@@ -387,14 +391,17 @@ def acquire(url: str) -> dict:
 # --- Apify ---------------------------------------------------------------
 
 def _apify_run(actor: str, payload: dict, token: str, timeout: int = 300) -> list:
+    # Bearer header, not ?token= — an HTTPError from urllib includes the URL,
+    # which would otherwise write the key into logs/bot.err.log.
     endpoint = (
         f"https://api.apify.com/v2/acts/{actor}"
-        f"/run-sync-get-dataset-items?token={token}&timeout={timeout}"
+        f"/run-sync-get-dataset-items?timeout={timeout}"
     )
     req = urllib.request.Request(
         endpoint,
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {token}"},
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout + 30) as r:

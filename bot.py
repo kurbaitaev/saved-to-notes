@@ -44,6 +44,15 @@ CLAUDE_BIN = shutil.which("claude") or "/opt/homebrew/bin/claude"
 AGENT_TIMEOUT_S = 15 * 60
 URL_RE = re.compile(r"https?://\S+")
 
+
+def _extract_urls(text: str) -> list[str]:
+    """Pull http(s) links out of a message, minus trailing sentence punctuation.
+
+    `https?://\\S+` otherwise keeps the period in 'check this https://x.com/a/status/1.'
+    which makes a new ledger key and a 404.
+    """
+    return [u.rstrip(".,;:!?)>") for u in URL_RE.findall(text or "")]
+
 logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
 # httpx logs full request URLs, and Telegram's URLs embed the bot token — that
 # would write the token into every log line. Errors still surface.
@@ -1065,12 +1074,23 @@ _last_url: dict[int, str] = {}  # per-user most recent link, for /force redo
 
 
 async def on_start(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    # Always send the numeric id — that's how you populate ALLOWED_USER_IDS.
+    # Refusing /start when the list is empty made first-run setup impossible
+    # (the README says "send /start and it replies with your id").
+    uid = update.effective_user.id
+    if not os.environ.get("ALLOWED_USER_IDS", "").strip():
+        await update.message.reply_text(
+            f"Bot is locked until you set ALLOWED_USER_IDS in .env.\nYour user id: {uid}\n"
+            "Put that in .env and restart."
+        )
+        return
     if not allowed(update):
+        await update.message.reply_text(f"Not authorized. Your user id: {uid}")
         return
     await update.message.reply_text(
         "Send me a reel / video / article link and I'll turn it into actionable items.\n"
         "Send /force to redo the last one (replaces it, doesn't duplicate).\n"
-        f"Your user id: {update.effective_user.id}"
+        f"Your user id: {uid}"
     )
 
 
@@ -1092,7 +1112,7 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
         await update.message.reply_text("Not authorized.")
         return
     text = update.message.text or ""
-    urls = URL_RE.findall(text)
+    urls = _extract_urls(text)
     if not urls:
         await update.message.reply_text("Send me a link (Instagram reel, X post, TikTok, YouTube).")
         return
@@ -1225,9 +1245,6 @@ async def _resume_pending(app) -> None:
                     )
                 except Exception:  # noqa: BLE001
                     pass
-                continue
-            if (ledger.get(url) or {}).get("status") == "done":
-                ledger.pending_remove(url)   # finished, just never un-marked
                 continue
             log.info("resuming interrupted reel %s", url)
             try:

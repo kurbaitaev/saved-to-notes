@@ -4,7 +4,6 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-LABEL="${SERVICE_LABEL:-com.$(id -un).saved-to-notes}"
 AGENTS="$HOME/Library/LaunchAgents"
 DOMAIN="gui/$(id -u)"
 PYTHON="${PYTHON:-$(command -v python3)}"
@@ -18,6 +17,12 @@ if [ ! -f "$HERE/.env" ]; then
   echo "error: no .env yet. Run:  cp .env.example .env  then fill in your bot token." >&2
   exit 1
 fi
+
+# Prefer SERVICE_LABEL from the environment, then .env, then the username default.
+if [ -z "${SERVICE_LABEL:-}" ]; then
+  SERVICE_LABEL="$(grep -E '^SERVICE_LABEL=' "$HERE/.env" | tail -1 | cut -d= -f2- | tr -d "\"'" || true)"
+fi
+LABEL="${SERVICE_LABEL:-com.$(id -un).saved-to-notes}"
 
 mkdir -p "$HERE/logs" "$AGENTS"
 
