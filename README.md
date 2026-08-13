@@ -2,7 +2,7 @@
 
 Your saved posts are a graveyard. Turn them into something you'll actually read.
 
-Send a link — Instagram reel, carousel or photo, an X post, a TikTok — to your own Telegram bot. Get back a clean, permanent note: what it actually said, word for word, plus real verified links to every book, podcast, tool and concept it mentioned. Filed into a folder, searchable, and still yours after the original post is deleted.
+Send a link — Instagram reel, carousel or photo, an X post, a TikTok, a YouTube video, an article or newsletter — or just a photo/video from Telegram. Get back a clean, permanent note: what it actually said, word for word, plus real verified links to every book, podcast, tool and concept it mentioned. Filed into a folder, searchable, and still yours after the original post is deleted.
 
 You bookmark something useful, and three weeks later you can't find it, can't remember which one had the book recommendation, and half of them are gone. That's the problem this exists for.
 
@@ -41,7 +41,7 @@ Acquisition is kept out of the agent on purpose: it's the fragile, infrastructur
 
 ## Setup
 
-**Requires macOS** (launchd for the service, Apple's ffmpeg build, Claude Code CLI) and **Python 3.10+**.
+**Requires Python 3.10+.** On a Mac, `./install.sh` sets up launchd (and Apple's ffmpeg). On Linux, see `deploy/`.
 
 ```bash
 git clone https://github.com/kurbaitaev/saved-to-notes.git
@@ -99,7 +99,8 @@ Everything optional lives in [.env.example](.env.example) with comments. The one
 
 | Variable | Default | What it does |
 |---|---|---|
-| `APIFY_TOKEN` | *(unset)* | Paid. Adds a **spoken transcript** and is more reliable than yt-dlp. Without it everything still works — see below. |
+| `APIFY_TOKEN` | *(unset)* | Paid. More reliable Instagram + tweet **threads**. Without it: yt-dlp + Whisper (speech) and fxtwitter (single tweets). |
+| `WHISPER` | `auto` | Spoken transcript without Apify. Uses OpenAI Whisper (~$0.006/min) if `OPENAI_API_KEY` is set, else a local `whisper` CLI. `0` disables. |
 | `NOTION_TOKEN` + `NOTION_DATABASE_ID` | *(unset)* | Sync notes to a Notion database. Skipped silently if unset. |
 | `CLAUDE_MODEL` | *(your default)* | e.g. `claude-sonnet-4-6`. A stronger model gets links right more often. |
 | `VIDEO_FRAMES` | `6` | Frames sampled per video for on-screen text. `0` disables. |
@@ -108,7 +109,17 @@ Everything optional lives in [.env.example](.env.example) with comments. The one
 
 ### Free vs. paid
 
-**It runs with no paid services at all.** yt-dlp fetches public reels anonymously, ffmpeg samples the frames, and the agent reads them. What you lose without `APIFY_TOKEN` is the **spoken transcript** — notes are built from the caption and on-screen text, and the note says so plainly instead of pretending. For a lot of reels (lists, carousels, text-on-screen) that's barely a downgrade; for a talking-head interview it is.
+**It runs with no paid services at all.** What each paid thing actually buys:
+
+| Paid | What you get | Free / cheap stand-in |
+|---|---|---|
+| `APIFY_TOKEN` | Reliable IG scrape + **spoken transcript** + tweet **threads** | yt-dlp (media + YouTube captions) + **Whisper** for speech (~$0.006/min via OpenAI, or local `whisper`) + **fxtwitter** for single tweets (no key) |
+| OpenAI / Anthropic API | Headless reasoning that doesn't expire | Claude CLI login (subscription, expires every few months) |
+| Firecrawl MCP | Richer link verification | Built-in WebSearch (already on) |
+
+Without Apify, talking-head Instagram is the weak spot unless Whisper is on — notes then come from the caption and on-screen frames, and say so. Lists, carousels, articles, photos, and YouTube (captions) are fine.
+
+YouTube captions via yt-dlp are free. Whisper is the cheap Apify replacement for speech. fxtwitter is unofficial and can break; Apify is the paid insurance for X threads.
 
 yt-dlp's Instagram support **needs 2026.07.04 or newer** — older builds fail with "empty media response". `doctor.py` checks the version for you.
 
@@ -141,9 +152,9 @@ The bot's own logs are gitignored, and `.env` is never committed. Telegram reque
 
 ## Limitations
 
-- **macOS only.** The service layer is launchd; the rest is portable but untested elsewhere.
-- **Instagram and X are first-class.** Instagram uses Apify (spoken transcript) with yt-dlp as fallback; X/Twitter uses Apify's tweet scraper, which handles text, photo and video posts — yt-dlp only understands tweets containing video. YouTube and TikTok go through yt-dlp and mostly work. **Plain articles and newsletters don't yet** — anything with no video fails, since nothing fetches the page text.
-- **Acquisition breaks periodically.** Instagram changes things; yt-dlp catches up within days. Keep it updated.
+- **macOS LaunchAgent by default.** Linux systemd unit is in `deploy/`. The rest is portable. A server needs `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` (no login keychain).
+- **Instagram, X, YouTube, TikTok, articles, and Telegram photos/videos.** Instagram spoken audio wants Apify or Whisper. X single tweets work via fxtwitter without a token; threads still want Apify. Articles use trafilatura on the fetched HTML (paywalls still win).
+- **Acquisition breaks periodically.** Instagram changes things; yt-dlp catches up within days. Keep it updated. fxtwitter is unofficial.
 - **Single user.** One person, one machine, a JSON-file ledger. Sharing it with friends means one install each.
 - Verified links are checked by an LLM with web search. ✅ means it found a canonical page — not a human guarantee.
 

@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import sys
 
+import acquire
+
 PROJ = pathlib.Path(__file__).resolve().parent
 OK, BAD, OPT = "\033[32mOK\033[0m", "\033[31mMISSING\033[0m", "\033[33mOPTIONAL\033[0m"
 problems = 0
@@ -49,14 +51,6 @@ def load_env() -> None:
         if line and not line.startswith("#") and "=" in line:
             k, _, v = line.partition("=")
             os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
-
-
-def ytdlp_version() -> str:
-    try:
-        return subprocess.run(["yt-dlp", "--version"], capture_output=True, text=True,
-                              timeout=20).stdout.strip()
-    except Exception:  # noqa: BLE001
-        return ""
 
 
 def main() -> int:
@@ -112,24 +106,33 @@ def main() -> int:
             problems += 1
 
     print("\nInstagram\n")
-    ver = ytdlp_version()
-    # The Instagram extractor was reworked 2026-06-28; older builds fail with
-    # "empty media response" on public reels.
-    fresh = ver >= "2026.07.04"
+    # Numeric compare — "2026.6.1" >= "2026.07.04" is True as a string, which
+    # used to tell you a June build was fine. Same helper acquire.py uses.
+    ver = acquire._ytdlp_version()
     if not ver:
         need(False, "yt-dlp", "brew install yt-dlp  (needed unless you use Apify)")
-    elif fresh:
-        say(OK, f"yt-dlp {ver}", "Instagram works without an account")
-    else:
+    elif acquire._ytdlp_too_old():
         say(BAD, f"yt-dlp {ver}", "too old for Instagram — run: brew upgrade yt-dlp")
         problems += 1
+    else:
+        say(OK, f"yt-dlp {ver}", "Instagram works without an account")
     optional(bool(env("APIFY_TOKEN")), "APIFY_TOKEN (paid)",
-             "no speech transcript — notes rely on the caption and on-screen text",
-             "reels get a spoken transcript")
+             "no IG speech transcript unless Whisper is on — notes rely on captions/frames",
+             "reels get a spoken transcript from Apify")
+    try:
+        import trafilatura  # noqa: F401
+        say(OK, "trafilatura", "article extraction")
+    except ImportError:
+        say(OPT, "trafilatura", "without it: articles use a naive HTML strip — pip install -r requirements.txt")
 
     print("\nOptional\n")
     optional(bool(shutil.which("ffmpeg")) and bool(shutil.which("ffprobe")), "ffmpeg",
              "no video frames, so text shown on screen is missed", "frame sampling works")
+    whisper = env("WHISPER").lower() not in ("0", "off", "false", "no")
+    has_whisper = bool(env("OPENAI_API_KEY")) or bool(shutil.which("whisper"))
+    optional(whisper and has_whisper, "Whisper (speech → text)",
+             "talking-head reels have no spoken transcript without Apify",
+             "OpenAI Whisper API" if env("OPENAI_API_KEY") else ("local whisper CLI" if shutil.which("whisper") else "off"))
     optional(bool(env("NOTION_TOKEN") and env("NOTION_DATABASE_ID")), "Notion",
              "notes only go to the local vault + Telegram", "notes sync to Notion")
 

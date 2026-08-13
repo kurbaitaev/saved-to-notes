@@ -138,8 +138,136 @@ def test_all_instagram_link_forms_collapse_to_one_key():
 def test_tracking_params_stripped_but_real_params_kept():
     assert acquire.normalize_url(
         "https://www.threads.com/@u/post/X?xmt=AQ&slof=1") == "https://www.threads.com/@u/post/X"
-    # unknown hosts are left alone
+    # unknown hosts keep real params, lose tracking
     assert acquire.normalize_url("https://example.com/a?q=keep") == "https://example.com/a?q=keep"
+    assert acquire.normalize_url(
+        "https://example.com/a?utm_source=x&q=keep") == "https://example.com/a?q=keep"
+
+
+def test_apify_does_not_put_the_token_in_the_url():
+    import inspect
+    src = inspect.getsource(acquire._apify_run)
+    assert "run-sync-get-dataset-items?token=" not in src
+    assert "Authorization" in src and "Bearer" in src
+
+
+def test_instagram_host_check_does_not_match_query_strings():
+    assert acquire.is_instagram("https://www.instagram.com/reel/ABC/")
+    assert acquire.is_instagram("https://instagram.com/p/ABC/")
+    assert not acquire.is_instagram("https://evil.example/share?u=https://instagram.com/reel/X")
+    assert not acquire.is_instagram("https://example.com/?q=instagram.com")
+
+
+def test_ytdlp_version_compare_is_numeric():
+    """String compare treated 2026.6.1 as newer than 2026.07.04."""
+    real = acquire._ytdlp_version
+    try:
+        acquire._ytdlp_version = lambda: "2026.6.1"
+        assert acquire._ytdlp_too_old() is True
+        acquire._ytdlp_version = lambda: "2026.7.4"
+        assert acquire._ytdlp_too_old() is False
+        acquire._ytdlp_version = lambda: "2026.07.04"
+        assert acquire._ytdlp_too_old() is False
+        acquire._ytdlp_version = lambda: ""
+        assert acquire._ytdlp_too_old() is False  # unknown → don't blame it
+    finally:
+        acquire._ytdlp_version = real
+
+
+def test_trailing_punctuation_is_stripped_from_pasted_urls():
+    assert bot._extract_urls("see https://x.com/a/status/1.") == ["https://x.com/a/status/1"]
+    assert bot._extract_urls("(https://www.instagram.com/reel/ABC/)") == [
+        "https://www.instagram.com/reel/ABC/"]
+    assert bot._extract_urls("https://x.com/a/status/1, https://x.com/b/status/2!") == [
+        "https://x.com/a/status/1", "https://x.com/b/status/2"]
+
+
+def test_vtt_captions_drop_timestamps_and_dupes():
+    tmp = pathlib.Path(tempfile.mkdtemp()) / "c.vtt"
+    tmp.write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:01.000\nHello\n\n"
+        "00:00:01.000 --> 00:00:02.000\nHello\nworld\n")
+    assert acquire._vtt_text(str(tmp)) == "Hello\nworld"
+
+
+def test_direct_image_url_is_detected():
+    assert acquire.is_direct_image("https://cdn.example/a/photo.jpg?w=800")
+    assert acquire.is_direct_image("https://x.com/i/foo.PNG")
+    assert not acquire.is_direct_image("https://example.com/blog/post")
+
+
+def test_article_is_fetched_when_ytdlp_finds_no_media():
+    html = (
+        "<html><head>"
+        '<meta property="og:title" content="Hello World">'
+        '<meta property="og:description" content="A dek.">'
+        "</head><body><article><p>The body of the piece is long enough to keep.</p>"
+        "</article></body></html>"
+    )
+    real_ytdlp, real_get, real_dl = acquire._acquire_ytdlp, acquire._http_get, acquire._download
+
+    def no_media(url):
+        raise acquire.AcquireError("yt-dlp: no media at this URL", retryable=False)
+
+    acquire._acquire_ytdlp = no_media
+    acquire._http_get = lambda url, timeout=30: html.encode()
+    acquire._download = lambda *a, **k: None
+    try:
+        m = acquire.acquire("https://example.com/blog/hello")
+        assert m["kind"] == "article"
+        assert "Hello World" in m["title"]
+        assert "body of the piece" in m["transcript"]
+    finally:
+        acquire._acquire_ytdlp, acquire._http_get, acquire._download = real_ytdlp, real_get, real_dl
+
+
+def test_article_prompt_does_not_look_like_a_photo_post():
+    media = {"kind": "article", "platform": "substack", "title": "T",
+             "transcript": "article body here", "images": ["/tmp/hero.jpg"], "caption": "dek"}
+    ctx = bot._media_context("https://example.com/p", media)
+    prompt = bot.build_prompt("https://example.com/p", media)
+    assert "ARTICLE TEXT" in ctx and "ARTICLE TEXT" in prompt
+    assert "PHOTO POST" not in prompt
+    assert "dek" not in ctx.split("ARTICLE TEXT")[0]  # caption isn't double-added as Caption:
+
+
+def test_fxtwitter_handles_text_and_photos_without_apify():
+    import os
+    saved = os.environ.pop("APIFY_TOKEN", None)
+    real_json, real_dl, real_ytdlp = acquire._http_json, acquire._download, acquire._acquire_ytdlp
+    acquire._http_json = lambda url, timeout=30: {
+        "code": 200,
+        "tweet": {
+            "text": "a tweet with a picture",
+            "author": {"screen_name": "someone"},
+            "media": {"photos": [{"url": "https://pbs.twimg.com/media/x.jpg"}], "videos": []},
+        },
+    }
+    acquire._download = lambda src, dest, timeout=60: pathlib.Path(dest).write_bytes(b"jpg")
+    acquire._acquire_ytdlp = lambda url: (_ for _ in ()).throw(RuntimeError("ytdlp should not run"))
+    try:
+        m = acquire.acquire("https://x.com/someone/status/999")
+        assert m["platform"] == "twitter"
+        assert m["kind"] == "image" and len(m["images"]) == 1
+        assert m["caption"] == "a tweet with a picture"
+    finally:
+        acquire._http_json, acquire._download, acquire._acquire_ytdlp = real_json, real_dl, real_ytdlp
+        if saved is not None:
+            os.environ["APIFY_TOKEN"] = saved
+
+
+def test_telegram_photo_becomes_an_image_note():
+    tmp = pathlib.Path(tempfile.mkdtemp()) / "p.jpg"
+    tmp.write_bytes(b"jpg")
+    m = acquire.from_local(url="telegram:photo:abc", images=[str(tmp)], caption="screenshot of a list")
+    assert m["kind"] == "image" and m["platform"] == "telegram"
+    assert m["caption"] == "screenshot of a list"
+
+
+def test_localhost_article_is_refused():
+    assert acquire._url_is_safe("https://example.com/a")
+    assert not acquire._url_is_safe("http://127.0.0.1/secret")
+    assert not acquire._url_is_safe("file:///etc/passwd")
 
 
 # --- acquisition branches ------------------------------------------------
@@ -459,6 +587,21 @@ def test_openai_backend_is_off_without_a_key():
     finally:
         if saved:
             os.environ["OPENAI_API_KEY"] = saved
+
+
+def test_watchdog_label_follows_env_not_the_authors_machine():
+    import os
+    import watchdog
+    saved = os.environ.pop("SERVICE_LABEL", None)
+    user = os.environ.get("USER", "user")
+    try:
+        assert watchdog._service_label() == f"com.{user}.saved-to-notes"
+        os.environ["SERVICE_LABEL"] = "com.example.saved-to-notes"
+        assert watchdog._service_label() == "com.example.saved-to-notes"
+    finally:
+        os.environ.pop("SERVICE_LABEL", None)
+        if saved is not None:
+            os.environ["SERVICE_LABEL"] = saved
 
 
 # --- notion --------------------------------------------------------------

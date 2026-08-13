@@ -3,8 +3,8 @@
   "permissions": {
     "allow": [
       "Read(//tmp/saved-to-notes/**)",
-      "Grep",
-      "Glob",
+      "Grep(//tmp/saved-to-notes/**)",
+      "Glob(//tmp/saved-to-notes/**)",
       "WebSearch",
       "WebFetch",
       "ToolSearch",
@@ -14,6 +14,9 @@
       "mcp__gemini-analyze__analyze_video",
       "mcp__gemini-analyze__validate_key"
     ],
-    "deny": []
+    "deny": [
+      "Read(.env)",
+      "Read(//**/.env)"
+    ]
   }
 }

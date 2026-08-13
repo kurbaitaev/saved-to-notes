@@ -35,14 +35,6 @@ MAX_IMAGES = 12
 # and is plenty to read on-screen text.
 MAX_IMAGE_WIDTH = 720
 
-# Searches are billed per call ($0.01), so keep verification focused on the
-# domains that actually count as canonical for our item types.
-VERIFY_DOMAINS = [
-    "goodreads.com", "amazon.com", "open.spotify.com", "podcasts.apple.com",
-    "youtube.com", "wikipedia.org", "github.com", "apps.apple.com",
-    "investopedia.com", "imdb.com",
-]
-
 _ITEM = {
     "type": "object",
     "properties": {
@@ -184,9 +176,7 @@ def analyze(instructions: str, context_text: str, image_paths: list[str] | None 
             model=model,
             instructions=_OVERRIDE + "\n\n" + instructions,
             input=[{"role": "user", "content": content}],
-            tools=[{"type": "web_search",
-                    "search_context_size": "medium",
-                    "filters": {"allowed_domains": VERIFY_DOMAINS}}],
+            tools=[{"type": "web_search", "search_context_size": "medium"}],
             tool_choice="auto",
             text={"format": {"type": "json_schema", "name": "reel_note",
                              "strict": True, "schema": SCHEMA}},
