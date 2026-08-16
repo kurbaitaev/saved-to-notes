@@ -344,7 +344,7 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
         prior = await asyncio.to_thread(notion.existing_date, url)
     date_iso = prior or datetime.date.today().isoformat()
     # vault write (disk) and Notion sync (network) are independent — run them together
-    sinks = [asyncio.to_thread(_write_vault_note, obj, url, transcript, date_iso)]
+    sinks = [asyncio.to_thread(_write_vault_note, obj, url, transcript, date_iso, media)]
     if notion.enabled():
         sinks.append(asyncio.to_thread(_sync_notion, obj, media, url, transcript, date_iso))
     # A failing sink must NOT abort delivery or skip ledger.put (else the reel is
@@ -518,10 +518,11 @@ def _detail_text(obj: dict, transcript: str) -> str:
     parts = []
     if _ok(obj.get("summary")):
         parts.append(_esc(obj["summary"]))
+    # Independent, not either/or — see _write_vault_note for why.
+    if transcript.strip():
+        parts.append(_esc(transcript))
     if obj.get("slides"):
         parts.append(_slides_html(obj))
-    elif transcript.strip():
-        parts.append(_esc(transcript))
     return "\n\n".join(parts)
 
 
@@ -947,7 +948,13 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "")
         _in_flight.discard(norm)
 
 
-def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str) -> str:
+def _caption_heading(media: dict | None) -> str:
+    """On X the caption is the post itself, not a caption under something."""
+    return "Post text" if (media or {}).get("platform") == "twitter" else "Caption"
+
+
+def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str,
+                      media: dict | None = None) -> str:
     """Bot writes the durable vault note (markdown mirror of the saved note)."""
     # Filed into its folder, so the vault browses like folders instead of one
     # 160-file inbox.
@@ -1013,6 +1020,13 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str) -> st
     L += ["", f"**Original:** {url}"]
     if tags:
         L.append(tags)
+    # Every verbatim source is written independently. These used to be an
+    # if/elif chain, so a post that had BOTH on-screen slides and speech kept
+    # only the slides — and the exact wording is the whole reason to keep a
+    # note you intend to remake something from.
+    if transcript.strip():
+        heading = "Full article" if obj.get("kind") == "article" else "Transcript"
+        L += ["", f"## {heading}", "", transcript.strip(), ""]
     if obj.get("slides"):
         L += ["", "## Slides"]
         for i, s in enumerate(obj["slides"], 1):
@@ -1022,9 +1036,11 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str) -> st
             if (s.get("text") or "").strip():
                 L += ["", s["text"].strip()]
             L.append("")
-    elif transcript.strip():
-        heading = "Full article" if obj.get("kind") == "article" else "Transcript"
-        L += ["", f"## {heading}", "", transcript.strip(), ""]
+    # The caption is verbatim too, and for an X post it IS the post — every
+    # tweet saved before this kept no exact wording anywhere.
+    caption = ((media or {}).get("caption") or "").strip()
+    if caption and caption != transcript.strip():
+        L += ["", f"## {_caption_heading(media)}", "", caption, ""]
     (d / fname).write_text("\n".join(L))
     return f"{folder}/{fname}"
 

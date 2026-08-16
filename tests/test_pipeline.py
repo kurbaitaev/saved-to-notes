@@ -587,6 +587,57 @@ def test_a_paywall_footer_is_not_mistaken_for_an_article():
     assert article._prose_len(footer) < article.FLOOR_CHARS
 
 
+# --- verbatim preservation ---------------------------------------------
+# The exact wording is the whole reason to keep a note you plan to remake
+# something from. Three separate ways it was being lost.
+
+def test_slides_do_not_displace_the_transcript(tmp_path, monkeypatch):
+    """These were an if/elif, so a post with both on-screen text and speech
+    kept only the slides."""
+    monkeypatch.setattr(bot, "PROJECT_DIR", tmp_path)
+    obj = {"title": "Both", "folder": folders.CONTENT_IDEAS,
+           "slides": [{"text": "ON SCREEN WORDS", "description": "d"}]}
+    rel = bot._write_vault_note(obj, "https://x.test/1", "SPOKEN WORDS", "2026-08-16")
+    text = (tmp_path / "vault" / rel).read_text()
+    assert "SPOKEN WORDS" in text, "the transcript was dropped"
+    assert "ON SCREEN WORDS" in text
+    assert "## Transcript" in text and "## Slides" in text
+
+
+def test_a_tweet_keeps_its_exact_wording(tmp_path, monkeypatch):
+    """X posts have no transcript — the text lives in the caption, which never
+    reached the note. All 11 saved tweets had no verbatim text anywhere."""
+    monkeypatch.setattr(bot, "PROJECT_DIR", tmp_path)
+    tweet = "The exact words of the post, which I may want to quote later."
+    media = {"platform": "twitter", "caption": tweet}
+    rel = bot._write_vault_note({"title": "T", "folder": folders.STARTUP},
+                                "https://x.com/a/status/1", "", "2026-08-16", media)
+    text = (tmp_path / "vault" / rel).read_text()
+    assert tweet in text
+    assert "## Post text" in text, "an X post's caption IS the post"
+
+
+def test_a_caption_is_not_duplicated_when_it_equals_the_transcript(tmp_path, monkeypatch):
+    monkeypatch.setattr(bot, "PROJECT_DIR", tmp_path)
+    same = "identical text"
+    rel = bot._write_vault_note({"title": "T", "folder": folders.MINDSET},
+                                "https://x.test/2", same, "2026-08-16",
+                                {"platform": "instagram", "caption": same})
+    assert (tmp_path / "vault" / rel).read_text().count(same) == 1
+
+
+def test_a_video_with_no_speech_says_so_instead_of_going_quiet():
+    """Apify hit its monthly cap and Whisper wasn't installed; 62 notes were
+    saved with no exact wording and nothing explaining why."""
+    missing_tool = acquire.no_speech_warning(have_local=False)
+    silent_reel = acquire.no_speech_warning(have_local=True)
+    # Both must say the wording is gone...
+    assert "exact wording" in missing_tool and "exact wording" in silent_reel
+    # ...but they are different problems and must not give the same advice.
+    assert "openai-whisper" in missing_tool
+    assert "openai-whisper" not in silent_reel
+
+
 def test_an_article_note_is_not_labelled_a_transcript():
     obj = {"kind": "article", "summary": "s"}
     assert "article" in bot._detail_label(obj)
