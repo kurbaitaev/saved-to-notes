@@ -32,6 +32,20 @@ def need(cond: bool, name: str, fix: str, detail: str = "") -> None:
         problems += 1
 
 
+def _apify_usage(token: str) -> tuple[float | None, float | None]:
+    """(spent this month, monthly cap) in USD, or (None, None) if unreachable."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+                f"https://api.apify.com/v2/users/me/limits?token={token}", timeout=15) as r:
+            d = json.load(r)["data"]
+        return (float(d.get("current", {}).get("monthlyUsageUsd", 0)),
+                float(d.get("limits", {}).get("maxMonthlyUsageUsd") or 0) or None)
+    except Exception:  # noqa: BLE001 — a doctor check must never itself crash
+        return None, None
+
+
 def optional(cond: bool, name: str, without: str, detail: str = "") -> None:
     say(OK if cond else OPT, name, detail if cond else f"without it: {without}")
 
@@ -123,9 +137,35 @@ def main() -> int:
     else:
         say(BAD, f"yt-dlp {ver}", "too old for Instagram — run: brew upgrade yt-dlp")
         problems += 1
-    optional(bool(env("APIFY_TOKEN")), "APIFY_TOKEN (paid)",
-             "no speech transcript — notes rely on the caption and on-screen text",
-             "reels get a spoken transcript")
+    # Token presence is not the same as Apify working. The account silently hit
+    # its monthly spend cap and answered 403 for three days while this check
+    # kept reporting OK, which is how 62 notes lost their transcript.
+    tok = env("APIFY_TOKEN")
+    if not tok:
+        optional(False, "APIFY_TOKEN (paid)",
+                 "no Apify — yt-dlp + local Whisper handle it", "")
+    else:
+        used, cap = _apify_usage(tok)
+        if used is None:
+            say(OPT, "APIFY_TOKEN", "token set, but the account couldn't be checked")
+        elif cap and used >= cap:
+            say(BAD, f"Apify ${used:.2f} / ${cap:.0f}",
+                "monthly cap reached — Apify returns 403 and every reel falls "
+                "back to yt-dlp. Raise the limit or wait for the cycle to reset")
+            problems += 1
+        else:
+            pct = f" ({used / cap:.0%} of cap)" if cap else ""
+            say(OK, f"Apify ${used:.2f}{pct}", "spoken transcripts available")
+
+    try:
+        import transcribe_local
+        has_whisper = transcribe_local.available()
+    except Exception:  # noqa: BLE001
+        has_whisper = False
+    optional(has_whisper, "local Whisper",
+             "a reel with no Apify transcript keeps NO exact wording "
+             "(pip install openai-whisper)",
+             "reels get a free transcript even when Apify is unavailable")
 
     print("\nOptional\n")
     optional(bool(shutil.which("ffmpeg")) and bool(shutil.which("ffprobe")), "ffmpeg",
