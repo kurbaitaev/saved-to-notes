@@ -323,7 +323,8 @@ def _acquire_fxtwitter(url: str) -> dict:
     if video_path:
         try:
             import transcribe_local
-            transcript = transcribe_local.transcribe(video_path)
+            transcript = transcribe_local.transcribe(
+                video_path, on_screen_text=caption)
         except Exception as e:  # noqa: BLE001
             log.warning("local transcription skipped (%s)", e)
         if not transcript.strip():
@@ -724,7 +725,11 @@ def _acquire_ytdlp(url: str) -> dict:
         try:
             import transcribe_local
             have_local = transcribe_local.available()
-            transcript = transcribe_local.transcribe(video_path)
+            # Pass the caption. transcribe() has a vocabulary-overlap check for
+            # exactly this — hallucinated text over non-speech audio — and both
+            # call sites omitted the argument, so the safeguard never ran once.
+            transcript = transcribe_local.transcribe(
+                video_path, on_screen_text=meta.get("description", "") or "")
         except Exception as e:  # never let transcription break acquisition
             log.warning("local transcription skipped (%s)", e)
 
