@@ -34,7 +34,11 @@ import acquire  # noqa: E402
 
 PROJ = pathlib.Path(__file__).resolve().parent
 VAULT = PROJ / "vault"
-HAS_VERBATIM = re.compile(r"^## (Transcript|Full article|Post text|Caption)", re.M)
+# Slides count: for a carousel the on-screen text IS the exact wording, and
+# there is nothing else to recover. Leaving them out of this list made the
+# first run re-fetch 20 carousels that were never missing anything.
+HAS_VERBATIM = re.compile(
+    r"^## (Transcript|Full article|Post text|Caption|Slides)", re.M)
 SOURCE = re.compile(r"^source:\s*(\S+)", re.M)
 
 
