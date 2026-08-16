@@ -71,6 +71,44 @@ def existing_date(source_url: str) -> str | None:
     return None
 
 
+VERBATIM_LABELS = ("📄 Transcript (verbatim)", "📄 Full article", "📄 Post text")
+ALREADY = "__already_present__"  # not an error; distinguishes a skip from a write
+
+
+def append_verbatim(source_url: str, label: str, text: str) -> str:
+    """Add the exact wording to an existing Notion page, once.
+
+    The vault and Notion are written by separate code paths, so recovering a
+    transcript into the vault leaves the Notion row untouched — and Notion is
+    where the notes actually get read. Idempotent: a page that already carries
+    a verbatim toggle is left alone, so this is safe to re-run.
+
+    Returns "" when the text was appended, the sentinel ALREADY when the page
+    already carried it, or a reason why it doesn't.
+    """
+    token = os.environ.get("NOTION_TOKEN", "").strip()
+    db_id = os.environ.get("NOTION_DATABASE_ID", "").strip()
+    if not (token and db_id and source_url and text.strip()):
+        return "Notion not configured"
+    try:
+        rows = _api(f"https://api.notion.com/v1/databases/{db_id}/query", token, "POST",
+                    {"filter": {"property": "Source", "url": {"equals": source_url}},
+                     "page_size": 1}).get("results", [])
+        if not rows:
+            return "no matching Notion row"
+        page_id = rows[0]["id"]
+        existing = _api(f"https://api.notion.com/v1/blocks/{page_id}/children?page_size=100",
+                        token, "GET").get("results", [])
+        for b in existing:
+            rt = (b.get(b.get("type", "")) or {}).get("rich_text") or []
+            head = "".join(r.get("plain_text", "") for r in rt)
+            if any(head.startswith(lbl) for lbl in VERBATIM_LABELS):
+                return ALREADY
+        return _append_blocks(page_id, [_toggle(label, text.strip())], token)
+    except Exception as e:  # noqa: BLE001
+        return f"{type(e).__name__}: {e}"
+
+
 def dedupe_by_source(source_url: str) -> int:
     """Keep only the newest page for a given reel Source; archive older ones.
 
