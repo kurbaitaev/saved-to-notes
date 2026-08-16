@@ -8,6 +8,7 @@ No network, no Apify, no Telegram — Apify calls are stubbed.
 
 import contextlib
 import json
+import os
 import pathlib
 import sys
 import tempfile
@@ -661,6 +662,47 @@ def test_a_video_with_no_speech_says_so_instead_of_going_quiet():
     # ...but they are different problems and must not give the same advice.
     assert "openai-whisper" in missing_tool
     assert "openai-whisper" not in silent_reel
+
+
+def test_x_posts_prefer_the_free_path_and_only_pay_for_threads():
+    """Apify's tweet actor and the free FxTwitter path return the same text, so
+    the paid one is only worth calling for the thing it alone can do."""
+    calls = []
+
+    def fake_fx(url):
+        calls.append("fx")
+        return {"source_url": url, "platform": "twitter", "kind": "text",
+                "caption": "full text", "author": "a", "title": "t",
+                "transcript": "", "detected_language": None, "video_path": None,
+                "images": [], "frames": [], "warnings": [], "reply_count": 0}
+
+    def fake_apify(url, token):
+        calls.append("apify")
+        raise AssertionError("Apify must not be called for a reply-less post")
+
+    with patched(acquire, "_acquire_fxtwitter", fake_fx), \
+         patched(acquire, "_acquire_apify_twitter", fake_apify), \
+         patched(os, "environ", dict(os.environ, APIFY_TOKEN="t")):
+        media = acquire.acquire("https://x.com/a/status/123")
+    assert calls == ["fx"]
+    assert media["caption"] == "full text"
+    assert "reply_count" not in media, "internal field leaked into the media contract"
+
+
+def test_a_possible_thread_is_never_silently_truncated():
+    """Without a token we cannot follow a thread. The note must say so rather
+    than quietly keeping only the first post."""
+    def fake_fx(url):
+        return {"source_url": url, "platform": "twitter", "kind": "text",
+                "caption": "first post", "author": "a", "title": "t",
+                "transcript": "", "detected_language": None, "video_path": None,
+                "images": [], "frames": [], "warnings": [], "reply_count": 7}
+
+    env = {k: v for k, v in os.environ.items() if k != "APIFY_TOKEN"}
+    with patched(acquire, "_acquire_fxtwitter", fake_fx), \
+         patched(os, "environ", env):
+        media = acquire.acquire("https://x.com/a/status/123")
+    assert any("7 repl" in w for w in media["warnings"])
 
 
 def test_an_article_note_is_not_labelled_a_transcript():
