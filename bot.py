@@ -107,7 +107,11 @@ def _media_context(url: str, media: dict, user_note: str = "") -> str:
         ctx.append(f"Author: {media['author']}")
     if media.get("caption"):
         ctx.append(f"Caption:\n{media['caption'][:2000]}")
-    if media.get("transcript"):
+    if media.get("kind") == "article":
+        ctx.append("ARTICLE TEXT (already extracted — do NOT fetch the URL again). Written "
+                   "prose, not speech: quote only where the wording matters, and spend the "
+                   f"note on the argument:\n{media['transcript'][:12000]}")
+    elif media.get("transcript"):
         ctx.append("TRANSCRIPT (verbatim spoken audio — do NOT paste it back; use it to "
                    f"write description/summary/items):\n{media['transcript'][:12000]}")
     elif media.get("images"):
@@ -141,6 +145,13 @@ def build_prompt(url: str, media: dict, user_note: str = "") -> str:
             f"{label} — there is no audio, so the images ARE the content. Read EACH of these "
             "local image files with the Read tool, capture the verbatim on-screen text + a short "
             f"description, and fill `slides` (one entry per image, in order):\n{paths}"
+        )
+    elif media.get("kind") == "article":
+        ctx.append(
+            "ARTICLE TEXT (already extracted — do NOT fetch the URL again; work from this). "
+            "This is written prose, not speech: quote it only where the wording matters, and "
+            f"spend the note on the argument rather than a play-by-play:\n"
+            f"{media['transcript'][:12000]}"
         )
     elif media.get("transcript"):
         ctx.append(
@@ -312,6 +323,11 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
     t_agent = time.monotonic()
 
     obj = _sanitize(obj)
+    # The acquirer knows what it fetched; the model is guessing. Article notes
+    # get different labels ("Full article", not "Full transcript"), and a model
+    # that answers "video" out of habit would undo that.
+    if media.get("kind") == "article":
+        obj["kind"] = "article"
     if user_note:
         # Their words, not a paraphrase of their words.
         obj["why_save"] = user_note
@@ -492,6 +508,11 @@ def _slides_html(obj: dict) -> str:
     return "\n\n".join(parts)
 
 
+def _detail_label(obj: dict) -> str:
+    """An article's preserved body is not a 'transcript' — nothing was spoken."""
+    return "📄 Full article" if obj.get("kind") == "article" else "📄 Full transcript"
+
+
 def _detail_text(obj: dict, transcript: str) -> str:
     """Summary + transcript/slides for the collapsible reference block."""
     parts = []
@@ -525,8 +546,13 @@ def _rec_lines(items: list) -> list[str]:
     return out
 
 
-def _link_line(url: str) -> str:
-    return f'🔗 <a href="{html.escape(url, quote=True)}">Original reel</a>' if url else ""
+def _source_label(obj: dict) -> str:
+    return "Original article" if obj.get("kind") == "article" else "Original reel"
+
+
+def _link_line(url: str, obj: dict) -> str:
+    return (f'🔗 <a href="{html.escape(url, quote=True)}">{_source_label(obj)}</a>'
+            if url else "")
 
 
 def _tags_line(obj: dict) -> str:
@@ -631,7 +657,7 @@ def render_telegram(obj: dict, url: str = "") -> str:
                 lines += [f"{i}. {_esc(s)}" for i, s in enumerate(items, 1)]
     if _ok(obj.get("why_save")):
         lines += ["", f"💾 <i>{_esc(obj['why_save'])}</i>"]
-    for x in (_link_line(url), _tags_line(obj)):
+    for x in (_link_line(url, obj), _tags_line(obj)):
         if x:
             lines.append(x)
     return "\n".join(lines)
@@ -673,13 +699,13 @@ def render_rich(obj: dict, url: str = "", transcript: str = "") -> str:
             blocks.append(f"<{wrap}>" + "".join(f"<li>{x}</li>" for x in li) + f"</{wrap}>")
     if _ok(obj.get("why_save")):
         blocks.append(f"💾 <i>{_esc(obj['why_save'])}</i>")
-    for x in (_link_line(url), _tags_line(obj)):
+    for x in (_link_line(url, obj), _tags_line(obj)):
         if x:
             blocks.append(x)
     body = "<br>".join(blocks)
     detail = _detail_text(obj, transcript)
     if detail:
-        body += f"<details><summary>📄 Full transcript</summary>{detail}</details>"
+        body += f"<details><summary>{_detail_label(obj)}</summary>{detail}</details>"
     return body
 
 
@@ -782,13 +808,14 @@ def render_blocks(obj: dict, url: str = "", transcript: str = "") -> dict:
                        "blocks": [_para_block(f"💾 {obj['why_save'].strip()}")]})
     if url:
         blocks.append({"type": "divider"})
-        blocks.append(_para_block([{"type": "url", "text": "🔗 Original reel", "url": url}]))
+        blocks.append(_para_block(
+            [{"type": "url", "text": "🔗 " + _source_label(obj), "url": url}]))
     detail = _detail_text(obj, transcript)
     if detail:
         # Rebuild from raw text: _detail_text is HTML for the other renderers.
         paras = [p.strip() for p in re.split(r"<br\s*/?>|\n", _plain(detail)) if p.strip()]
         if paras:
-            blocks.append({"type": "details", "summary": "📄 Full transcript",
+            blocks.append({"type": "details", "summary": _detail_label(obj),
                            "blocks": [_para_block(p) for p in paras[:60]]})
     tags = [str(t).strip().lstrip("#").replace(" ", "_") for t in (obj.get("tags") or []) if t]
     if tags:
@@ -996,7 +1023,8 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str) -> st
                 L += ["", s["text"].strip()]
             L.append("")
     elif transcript.strip():
-        L += ["", "## Transcript", "", transcript.strip(), ""]
+        heading = "Full article" if obj.get("kind") == "article" else "Transcript"
+        L += ["", f"## {heading}", "", transcript.strip(), ""]
     (d / fname).write_text("\n".join(L))
     return f"{folder}/{fname}"
 

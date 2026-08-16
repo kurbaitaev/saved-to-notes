@@ -130,6 +130,15 @@ def main() -> int:
     print("\nOptional\n")
     optional(bool(shutil.which("ffmpeg")) and bool(shutil.which("ffprobe")), "ffmpeg",
              "no video frames, so text shown on screen is missed", "frame sampling works")
+    try:
+        import trafilatura  # noqa: F401
+        has_traf = True
+    except ImportError:
+        has_traf = False
+    optional(has_traf, "trafilatura",
+             "articles fall back to r.jina.ai, which sends the URL to a third party "
+             "(pip install trafilatura)",
+             "articles and newsletters are read on this machine")
     optional(bool(env("NOTION_TOKEN") and env("NOTION_DATABASE_ID")), "Notion",
              "notes only go to the local vault + Telegram", "notes sync to Notion")
 
