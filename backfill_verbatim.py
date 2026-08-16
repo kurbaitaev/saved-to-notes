@@ -81,12 +81,66 @@ def sections_for(media: dict) -> list[str]:
     return blocks
 
 
+# Heading in the vault note -> the toggle label the live pipeline uses in Notion.
+NOTION_LABELS = {
+    "Transcript": "📄 Transcript (verbatim)",
+    "Full article": "📄 Full article",
+    "Post text": "📄 Post text",
+}
+SECTION = re.compile(
+    r"^## (Transcript|Full article|Post text)\s*\n(.*?)(?=\n## |\Z)", re.M | re.S)
+
+
+def sync_notion(dry: bool) -> tuple[int, int, int]:
+    """Push verbatim text the vault already has into the matching Notion page.
+
+    The two sinks are written by different code paths, so recovering a
+    transcript into a note leaves Notion untouched — and Notion is where these
+    get read. Idempotent, so re-running costs one query per note and no writes.
+    """
+    import notion
+    if not notion.enabled():
+        print("  Notion not configured — skipping")
+        return 0, 0, 0
+    added = present = failed = 0
+    for f in sorted(VAULT.rglob("*.md")):
+        text = f.read_text()
+        src = SOURCE.search(text)
+        m = SECTION.search(text)
+        if not (src and m):
+            continue
+        label, body = NOTION_LABELS[m.group(1)], m.group(2).strip()
+        if not body:
+            continue
+        if dry:
+            print(f"  would check {src.group(1)[:62]}")
+            added += 1
+            continue
+        err = notion.append_verbatim(src.group(1), label, body)
+        if err == notion.ALREADY:
+            present += 1
+        elif err:
+            print(f"    {f.name[:52]}: {err[:80]}")
+            failed += 1
+        else:
+            added += 1
+    return added, present, failed
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--limit", type=int, default=0)
+    ap.add_argument("--notion-only", action="store_true",
+                    help="skip re-fetching; only push what the vault already has")
     args = ap.parse_args()
     load_env()
+
+    if args.notion_only:
+        print("\nSyncing vault verbatim into Notion\n")
+        added, present, failed = sync_notion(args.dry_run)
+        print(f"\n{added} added, {present} already had it, {failed} failed\n")
+        return 0
 
     targets = find_targets()
     if args.limit:
@@ -121,7 +175,10 @@ def main() -> int:
         fixed += 1
         acquire.cleanup(media)
 
-    print(f"\n{fixed} recovered, {empty} had nothing to recover, {failed} failed to fetch\n")
+    print(f"\n{fixed} recovered, {empty} had nothing to recover, {failed} failed to fetch")
+    print("\nPushing to Notion")
+    added, present, nfail = sync_notion(dry=False)
+    print(f"  {added} added, {present} already had it, {nfail} failed\n")
     if empty or failed:
         print("Notes that stay empty are usually music-only reels with nothing "
               "spoken, or posts that no longer fetch at all (deleted, private, "
