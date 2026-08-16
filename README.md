@@ -99,7 +99,7 @@ Everything optional lives in [.env.example](.env.example) with comments. The one
 
 | Variable | Default | What it does |
 |---|---|---|
-| `APIFY_TOKEN` | *(unset)* | Paid. Adds a **spoken transcript** and is more reliable than yt-dlp. Without it everything still works — see below. |
+| `APIFY_TOKEN` | *(unset)* | Paid, and now optional for almost everything — see below. Its one remaining exclusive is following an X **thread** past its first post. |
 | `NOTION_TOKEN` + `NOTION_DATABASE_ID` | *(unset)* | Sync notes to a Notion database. Skipped silently if unset. |
 | `CLAUDE_MODEL` | *(your default)* | e.g. `claude-sonnet-4-6`. A stronger model gets links right more often. |
 | `VIDEO_FRAMES` | `6` | Frames sampled per video for on-screen text. `0` disables. |
@@ -114,7 +114,9 @@ The **spoken transcript** used to be the one thing you lost without `APIFY_TOKEN
 
 It refuses to guess: on a silent reel with background music Whisper will happily "transcribe" the song lyrics as speech, so `transcribe()` gates on confidence and returns nothing instead. A note that says "no speech detected" beats a note quoting a rap verse as the creator's words.
 
-What still needs `APIFY_TOKEN`: Instagram **play counts** (yt-dlp returns `view_count: None`) and enumerating a whole profile. Neither matters for single-link notes.
+**X posts are free too.** They go through [FxTwitter](https://github.com/FixTweet/FxTwitter), the open-source embed API — no key, no account. It returns the complete post text where Twitter's own public syndication endpoint truncates: 932 characters against 268 on a real saved post. It also downloads attached photos and video, and the video is transcribed locally like any other. As with the article fallback, this asks a third party about a public post ID.
+
+What still needs `APIFY_TOKEN`: following an X **thread** past its first post (FxTwitter answers about one post), Instagram **play counts** (yt-dlp returns `view_count: None`), and enumerating a whole profile. A post with replies says so in the note rather than quietly keeping only the first part.
 
 yt-dlp's Instagram support **needs 2026.07.04 or newer** — older builds fail with "empty media response". `doctor.py` checks the version for you.
 

@@ -262,6 +262,102 @@ def _tweet_text(t: dict) -> str:
     return max(((t.get("text") or "").strip(), (t.get("fullText") or "").strip()), key=len)
 
 
+FXTWITTER_API = os.environ.get("FXTWITTER_API", "https://api.fxtwitter.com").rstrip("/")
+
+
+def _acquire_fxtwitter(url: str) -> dict:
+    """X/Twitter for free, with no key and no account.
+
+    FxTwitter is the open-source embed service (github.com/FixTweet/FxTwitter).
+    It returns the complete post text where Twitter's own public syndication
+    endpoint truncates: on a real saved post, 932 characters against 268.
+
+    Chosen over Apify by default because it costs nothing and returns the same
+    text. What it cannot do is expand a thread — it answers about one post — so
+    the caller still reaches for Apify when a post has replies worth following.
+
+    Privacy note, same shape as the article fallback: this asks a third party
+    about a post ID. The post is public, but the request is not private.
+    """
+    m = _TWEET_RE.search(url or "")
+    if not m:
+        raise AcquireError("not a recognisable X post URL", retryable=False)
+    tweet_id = m.group(2)
+    req = urllib.request.Request(f"{FXTWITTER_API}/i/status/{tweet_id}",
+                                 headers={"User-Agent": "saved-to-notes/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            payload = json.loads(r.read().decode("utf-8", "replace"))
+    except Exception as e:  # noqa: BLE001
+        raise AcquireError(f"FxTwitter could not read this post ({e})") from e
+
+    t = payload.get("tweet") or {}
+    caption = (t.get("text") or t.get("raw_text") or "").strip()
+    if not caption and not (t.get("media") or {}).get("all"):
+        raise AcquireError(
+            "That post came back empty — it may be deleted, protected or "
+            "age-restricted.", retryable=False)
+
+    short = _shortcode(url)
+    warnings: list[str] = []
+    images, video_path = [], None
+    for i, item in enumerate((t.get("media") or {}).get("all") or []):
+        src = item.get("url")
+        if not src:
+            continue
+        try:
+            if item.get("type") in ("video", "gif") and video_path is None:
+                video_path = str(TMP / f"{short}.mp4")
+                _download(src, video_path, timeout=120)
+            elif item.get("type") == "photo":
+                dest = str(TMP / f"{short}-{i}.jpg")
+                _download(src, dest)
+                images.append(dest)
+        except Exception as e:  # noqa: BLE001 — a missing image is not a dead note
+            log.warning("media download failed (%s)", e)
+            warnings.append("one attached image or video couldn't be downloaded")
+            if item.get("type") in ("video", "gif"):
+                video_path = None
+
+    transcript = ""
+    if video_path:
+        try:
+            import transcribe_local
+            transcript = transcribe_local.transcribe(video_path)
+        except Exception as e:  # noqa: BLE001
+            log.warning("local transcription skipped (%s)", e)
+        if not transcript.strip():
+            warnings.append(no_speech_warning(_local_asr_available()))
+
+    frames = video_frames(video_path, short, _frame_count(len(transcript)))
+    author = (t.get("author") or {}).get("screen_name") or ""
+    log.info("fxtwitter: @%s, %d chars, %d image(s)%s",
+             author, len(caption), len(images), ", video" if video_path else "")
+    return {
+        "source_url": url,
+        "platform": "twitter",
+        "kind": "video" if video_path else ("image" if images else "text"),
+        "caption": caption,
+        "author": author,
+        "title": caption[:80] or short,
+        "transcript": transcript,
+        "detected_language": t.get("lang"),
+        "video_path": video_path,
+        "images": images,
+        "frames": frames,
+        "warnings": warnings,
+        "reply_count": t.get("replies") or 0,
+    }
+
+
+def _local_asr_available() -> bool:
+    try:
+        import transcribe_local
+        return transcribe_local.available()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _acquire_apify_twitter(url: str, token: str) -> dict:
     """X/Twitter via apidojo~tweet-scraper.
 
@@ -386,14 +482,38 @@ def acquire(url: str) -> dict:
         except AcquireError as e:
             log.warning("Apify path failed (%s) — falling back to yt-dlp", e)
             return _acquire_ytdlp(url)
-    if is_twitter(url) and token:
-        # yt-dlp only handles tweets that contain video; Apify covers text and
-        # photo tweets too. Still fall back, since yt-dlp needs no token.
+    if is_twitter(url):
+        # Free first. FxTwitter returns the same full text Apify does, at no
+        # cost, so paying is only justified for the one thing it can't do:
+        # expanding a thread into its later posts.
         try:
-            return _acquire_apify_twitter(url, token)
+            media = _acquire_fxtwitter(url)
         except AcquireError as e:
-            log.warning("tweet actor failed (%s) — falling back to yt-dlp", e)
+            log.warning("fxtwitter failed (%s)", e)
+            if token:
+                try:
+                    return _acquire_apify_twitter(url, token)
+                except Exception as e2:  # noqa: BLE001
+                    log.warning("tweet actor also failed (%s) — trying yt-dlp", e2)
             return _acquire_ytdlp(url)
+        replies = media.pop("reply_count", 0)
+        if token and replies:
+            try:
+                log.info("post has %d repl(y/ies) — checking Apify for a thread", replies)
+                return _acquire_apify_twitter(url, token)
+            # Not just AcquireError: _apify_run lets urllib's HTTPError through,
+            # so a capped account raised a bare 403 straight past this handler
+            # and discarded a perfectly good free result.
+            except Exception as e:  # noqa: BLE001
+                log.warning("thread expansion failed (%s) — keeping the free single post", e)
+                media["warnings"].append(
+                    f"This post has {replies} repl(y/ies) and the thread lookup "
+                    f"failed ({str(e)[:80]}), so only the first post was captured.")
+        elif replies:
+            media["warnings"].append(
+                f"This post has {replies} repl(y/ies). If it's a thread, only the "
+                "first post was captured — set APIFY_TOKEN to follow threads.")
+        return media
     if is_instagram(url) and not token:
         try:
             import transcribe_local

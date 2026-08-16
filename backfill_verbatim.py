@@ -123,8 +123,9 @@ def main() -> int:
 
     print(f"\n{fixed} recovered, {empty} had nothing to recover, {failed} failed to fetch\n")
     if empty or failed:
-        print("Notes that stay empty are usually silent/music-only reels, deleted "
-              "posts, or X posts (which need Apify, currently over its cap).\n")
+        print("Notes that stay empty are usually music-only reels with nothing "
+              "spoken, or posts that no longer fetch at all (deleted, private, "
+              "or removed by the platform).\n")
     return 0
 
 
