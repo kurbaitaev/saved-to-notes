@@ -120,6 +120,14 @@ yt-dlp's Instagram support **needs 2026.07.04 or newer** — older builds fail w
 
 **Do not add Instagram cookies.** People get their accounts permanently banned for scraping with them, including on their own posts. Public reels don't need them.
 
+### Articles and newsletters
+
+Send a blog post, an essay or a Substack link and you get the same kind of note, plus the full article text kept in the vault — so a piece that later goes behind a paywall is still readable in your own notes.
+
+A link that isn't a known media host is read as a page. [Trafilatura](https://trafilatura.readthedocs.io/) does the extraction locally: no browser, no API key, nothing leaves the machine. When a page is JavaScript-only and Trafilatura comes back empty, [Jina Reader](https://jina.ai/reader/) is the fallback — it's free and keyless, but it fetches the page from *their* servers, which means telling a third party what you saved. That's why it's second rather than first, and why `pip install trafilatura` is worth doing.
+
+PDFs are skipped deliberately. A half-extracted PDF is worse than an honest failure.
+
 ### Claude login vs. API key
 
 | | Subscription (`claude` → `/login`) | `ANTHROPIC_API_KEY` |
@@ -148,7 +156,7 @@ The bot's own logs are gitignored, and `.env` is never committed. Telegram reque
 ## Limitations
 
 - **macOS only.** The service layer is launchd; the rest is portable but untested elsewhere.
-- **Instagram and X are first-class.** Instagram uses Apify with yt-dlp as fallback (the fallback now transcribes locally, so it is no longer a downgrade for speech); X/Twitter uses Apify's tweet scraper, which handles text, photo and video posts — yt-dlp only understands tweets containing video. YouTube and TikTok go through yt-dlp and mostly work. **Plain articles and newsletters don't yet** — anything with no video fails, since nothing fetches the page text.
+- **Instagram and X are first-class.** Instagram uses Apify with yt-dlp as fallback (the fallback now transcribes locally, so it is no longer a downgrade for speech); X/Twitter uses Apify's tweet scraper, which handles text, photo and video posts — yt-dlp only understands tweets containing video. YouTube and TikTok go through yt-dlp and mostly work. Articles and newsletters work too (see below), but **PDFs don't** — they're excluded on purpose rather than half-read.
 - **Acquisition breaks periodically.** Instagram changes things; yt-dlp catches up within days. Keep it updated.
 - **Single user.** One person, one machine, a JSON-file ledger. Sharing it with friends means one install each.
 - Verified links are checked by an LLM with web search. ✅ means it found a canonical page — not a human guarantee.

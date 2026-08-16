@@ -20,6 +20,8 @@ import time
 import urllib.parse
 import urllib.request
 
+import article
+
 log = logging.getLogger("saved-to-notes.acquire")
 
 TMP = pathlib.Path("/tmp/saved-to-notes")
@@ -388,6 +390,12 @@ def acquire(url: str) -> dict:
                  "spoken transcript via local Whisper" if has_local else
                  "no spoken transcript; notes rely on the caption and on-screen "
                  "text. pip install openai-whisper to transcribe locally")
+    # A blog post, a newsletter, a docs page: no media to download, so every
+    # acquirer above fails on it. Routed by host, not attempted-then-failed,
+    # because yt-dlp spends 30s losing before it admits a page has no video.
+    if article.is_article(url):
+        log.info("no media host matched — reading %s as an article", url)
+        return article.acquire(url)
     return _acquire_ytdlp(url)
 
 

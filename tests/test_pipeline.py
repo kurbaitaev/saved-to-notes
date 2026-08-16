@@ -13,8 +13,11 @@ import tempfile
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
+import pytest  # noqa: E402
+
 import acquire  # noqa: E402
 import agent_openai  # noqa: E402
+import article  # noqa: E402
 import bot  # noqa: E402
 import folders  # noqa: E402
 import ledger  # noqa: E402
@@ -483,6 +486,111 @@ def test_unknown_author_sentinel_is_rejected():
     assert not notion._ok("Not clear from the Reel")
     assert not notion._ok("")
     assert notion._ok("Bill Gurley")
+
+
+# --- articles ------------------------------------------------------------
+# Everything without a video used to fail outright, which is most of what
+# anyone saves on X.
+
+def test_only_non_media_urls_are_routed_to_the_article_reader():
+    for u in ["https://www.instagram.com/reel/DaO9loyuVF_/",
+              "https://x.com/naval/status/1002103360646823936",
+              "https://youtu.be/dQw4w9WgXcQ",
+              "https://www.tiktok.com/@user/video/123",
+              "https://m.youtube.com/watch?v=abc",       # subdomains count
+              "https://example.com/whitepaper.pdf",      # a file, not a page
+              "not-a-url", "ftp://files.example.com/x"]:
+        assert not article.is_article(u), u
+    for u in ["https://paulgraham.com/greatwork.html",
+              "https://every.to/some-essay",
+              "https://blog.samaltman.com/how-to-be-successful",
+              "https://notyoutube.com/posts/1"]:  # endswith must not over-match
+        assert article.is_article(u), u
+
+
+def test_article_body_keeps_its_paragraph_structure():
+    """The JSON extractor's `raw_text` returns a whole essay with zero newlines.
+    Shipping that would have put every article in the vault as one wall of text."""
+    html = ("<html><head><title>T</title></head><body><article>"
+            + "".join(f"<p>{f'Sentence number {i}. ' * 12}</p>" for i in range(12))
+            + "</article></body></html>")
+    trafilatura = pytest.importorskip("trafilatura")
+    md = trafilatura.extract(html, output_format="markdown", with_metadata=False,
+                             include_comments=False, include_tables=True,
+                             favor_precision=True) or ""
+    assert md.count("\n") >= 10, "paragraph breaks were stripped"
+
+
+def test_a_page_that_cannot_be_read_fails_loudly(monkeypatch):
+    """A paywall must say so, not save an empty note."""
+    monkeypatch.setattr(article, "_via_trafilatura", lambda u: {})
+    monkeypatch.setattr(article, "_via_jina", lambda u: {"text": "too short"})
+    try:
+        article.acquire("https://paywalled.example.com/post")
+    except acquire.AcquireError as e:
+        assert "trafilatura" in str(e) and "jina" in str(e)
+    else:
+        raise AssertionError("an unreadable page must raise, not return an empty note")
+
+
+def test_a_thin_article_is_kept_with_a_warning_rather_than_dropped(monkeypatch):
+    """Better a short real note that says it is short than no note at all."""
+    body = "Real but short. " * 20  # under MIN_CHARS
+    monkeypatch.setattr(article, "_via_trafilatura",
+                        lambda u: {"text": body, "title": "Short",
+                                   "extractor": "trafilatura"})
+    monkeypatch.setattr(article, "_via_jina", lambda u: {})
+    d = article.fetch("https://example.com/short")
+    assert d["text"] == body
+    assert any("thin" in w for w in d["warnings"])
+
+
+def test_jina_is_not_called_with_a_browser_user_agent():
+    """r.jina.ai answers browser-looking agents with 403. Reusing the Chrome UA
+    that the media CDNs require broke every fallback: same URL, plain agent 200,
+    Chrome agent 403."""
+    seen = {}
+
+    class FakeResponse:
+        def read(self):
+            return b"Title: T\n\nMarkdown Content:\nbody"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def fake_urlopen(req, timeout=None):
+        seen["ua"] = req.get_header("User-agent", "")
+        return FakeResponse()
+
+    import urllib.request as ur
+    real = ur.urlopen
+    ur.urlopen = fake_urlopen
+    try:
+        article._via_jina("https://example.com/post")
+    finally:
+        ur.urlopen = real
+    assert "Mozilla" not in seen["ua"] and "Chrome" not in seen["ua"], seen["ua"]
+
+
+def test_a_paywall_footer_is_not_mistaken_for_an_article():
+    """A paywalled Substack returns ~500 characters of copyright and privacy
+    links — past any raw-length floor, and worthless as a note. Length is
+    measured on prose, not on link scaffolding."""
+    footer = ("[](https://www.example.com/)\n\n## [](https://www.example.com/)\n\n"
+              "[Privacy](https://x.com/privacy) · [Terms](https://x.com/terms) · "
+              "[Collection notice](https://x.com/collection)\n\n"
+              "[Start writing](https://x.com/signup)\n" * 6)
+    assert len(footer) > article.FLOOR_CHARS      # would have passed a raw check
+    assert article._prose_len(footer) < article.FLOOR_CHARS
+
+
+def test_an_article_note_is_not_labelled_a_transcript():
+    obj = {"kind": "article", "summary": "s"}
+    assert "article" in bot._detail_label(obj)
+    assert "transcript" in bot._detail_label({"kind": "video"}).lower()
 
 
 if __name__ == "__main__":
