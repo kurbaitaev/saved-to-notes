@@ -65,6 +65,20 @@ def _frame_count(transcript_len: int) -> int:
 THREAD_MAX_TWEETS = 50  # a thread longer than this is an outlier, not a note
 
 
+def no_speech_warning(have_local: bool) -> str:
+    """Why a video came back with no words.
+
+    A talking-head reel that yields no transcript used to be saved silently, so
+    the note simply had no exact wording and nothing said why. Apify hitting its
+    monthly spend cap while Whisper was not installed produced 62 such notes
+    before anyone noticed — the two causes need different fixes, so they get
+    different messages.
+    """
+    return ("No spoken transcript — the exact wording was not captured. " + (
+        "Whisper found no clear speech (music-only or silent reel)." if have_local
+        else "Local transcription is unavailable: pip install openai-whisper"))
+
+
 class AcquireError(RuntimeError):
     """retryable=False means it can never succeed (deleted, private, no media),
     so the link is released instead of being retried on every restart."""
@@ -585,9 +599,11 @@ def _acquire_ytdlp(url: str) -> dict:
     # reels. Whisper scores 97-98% against the paid transcript and returns ""
     # rather than guess when the audio is music (see transcribe_local.py).
     transcript = ""
+    have_local = False
     if video_path:
         try:
             import transcribe_local
+            have_local = transcribe_local.available()
             transcript = transcribe_local.transcribe(video_path)
         except Exception as e:  # never let transcription break acquisition
             log.warning("local transcription skipped (%s)", e)
@@ -596,6 +612,12 @@ def _acquire_ytdlp(url: str) -> dict:
     frames = video_frames(video_path, _shortcode(url), n)
     warnings = ([f"{n - len(frames)} of {n} video frames couldn't be extracted"]
                 if n and len(frames) < n else [])
+    # A talking-head reel that yields no words used to be saved silently, so a
+    # note simply had no exact wording and nothing said why. Apify hitting its
+    # monthly cap and Whisper not being installed produced 62 such notes before
+    # anyone noticed.
+    if video_path and not transcript.strip():
+        warnings.append(no_speech_warning(have_local))
     return {
         "source_url": url,
         "platform": meta.get("extractor_key", "unknown"),
