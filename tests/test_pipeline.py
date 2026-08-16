@@ -6,14 +6,32 @@
 No network, no Apify, no Telegram — Apify calls are stubbed.
 """
 
+import contextlib
 import json
 import pathlib
 import sys
 import tempfile
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
-import pytest  # noqa: E402
+@contextlib.contextmanager
+def patched(obj, name, value):
+    """monkeypatch, without needing pytest.
+
+    CI runs this file as a plain script with only requirements.txt installed,
+    so nothing here may import pytest or take a fixture argument.
+    """
+    missing = object()
+    old = getattr(obj, name, missing)
+    setattr(obj, name, value)
+    try:
+        yield
+    finally:
+        if old is missing:
+            delattr(obj, name)
+        else:
+            setattr(obj, name, old)
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
 import acquire  # noqa: E402
 import agent_openai  # noqa: E402
@@ -514,33 +532,35 @@ def test_article_body_keeps_its_paragraph_structure():
     html = ("<html><head><title>T</title></head><body><article>"
             + "".join(f"<p>{f'Sentence number {i}. ' * 12}</p>" for i in range(12))
             + "</article></body></html>")
-    trafilatura = pytest.importorskip("trafilatura")
+    try:
+        import trafilatura
+    except ImportError:
+        return  # optional dependency; the article path falls back to Jina
     md = trafilatura.extract(html, output_format="markdown", with_metadata=False,
                              include_comments=False, include_tables=True,
                              favor_precision=True) or ""
     assert md.count("\n") >= 10, "paragraph breaks were stripped"
 
 
-def test_a_page_that_cannot_be_read_fails_loudly(monkeypatch):
+def test_a_page_that_cannot_be_read_fails_loudly():
     """A paywall must say so, not save an empty note."""
-    monkeypatch.setattr(article, "_via_trafilatura", lambda u: {})
-    monkeypatch.setattr(article, "_via_jina", lambda u: {"text": "too short"})
-    try:
-        article.acquire("https://paywalled.example.com/post")
-    except acquire.AcquireError as e:
-        assert "trafilatura" in str(e) and "jina" in str(e)
-    else:
-        raise AssertionError("an unreadable page must raise, not return an empty note")
+    with patched(article, "_via_trafilatura", lambda u: {}), \
+         patched(article, "_via_jina", lambda u: {"text": "too short"}):
+        try:
+            article.acquire("https://paywalled.example.com/post")
+        except acquire.AcquireError as e:
+            assert "trafilatura" in str(e) and "jina" in str(e)
+        else:
+            raise AssertionError("an unreadable page must raise, not return an empty note")
 
 
-def test_a_thin_article_is_kept_with_a_warning_rather_than_dropped(monkeypatch):
+def test_a_thin_article_is_kept_with_a_warning_rather_than_dropped():
     """Better a short real note that says it is short than no note at all."""
     body = "Real but short. " * 20  # under MIN_CHARS
-    monkeypatch.setattr(article, "_via_trafilatura",
-                        lambda u: {"text": body, "title": "Short",
-                                   "extractor": "trafilatura"})
-    monkeypatch.setattr(article, "_via_jina", lambda u: {})
-    d = article.fetch("https://example.com/short")
+    with patched(article, "_via_trafilatura",
+                 lambda u: {"text": body, "title": "Short", "extractor": "trafilatura"}), \
+         patched(article, "_via_jina", lambda u: {}):
+        d = article.fetch("https://example.com/short")
     assert d["text"] == body
     assert any("thin" in w for w in d["warnings"])
 
@@ -591,39 +611,44 @@ def test_a_paywall_footer_is_not_mistaken_for_an_article():
 # The exact wording is the whole reason to keep a note you plan to remake
 # something from. Three separate ways it was being lost.
 
-def test_slides_do_not_displace_the_transcript(tmp_path, monkeypatch):
+def _note_text(obj, url, transcript, media=None):
+    """Write a vault note into a throwaway dir and hand back its text."""
+    with tempfile.TemporaryDirectory() as td:
+        root = pathlib.Path(td)
+        with patched(bot, "PROJECT_DIR", root):
+            rel = bot._write_vault_note(obj, url, transcript, "2026-08-16", media)
+        return (root / "vault" / rel).read_text()
+
+
+def test_slides_do_not_displace_the_transcript():
     """These were an if/elif, so a post with both on-screen text and speech
     kept only the slides."""
-    monkeypatch.setattr(bot, "PROJECT_DIR", tmp_path)
-    obj = {"title": "Both", "folder": folders.CONTENT_IDEAS,
-           "slides": [{"text": "ON SCREEN WORDS", "description": "d"}]}
-    rel = bot._write_vault_note(obj, "https://x.test/1", "SPOKEN WORDS", "2026-08-16")
-    text = (tmp_path / "vault" / rel).read_text()
+    text = _note_text(
+        {"title": "Both", "folder": folders.CONTENT_IDEAS,
+         "slides": [{"text": "ON SCREEN WORDS", "description": "d"}]},
+        "https://x.test/1", "SPOKEN WORDS")
     assert "SPOKEN WORDS" in text, "the transcript was dropped"
     assert "ON SCREEN WORDS" in text
     assert "## Transcript" in text and "## Slides" in text
 
 
-def test_a_tweet_keeps_its_exact_wording(tmp_path, monkeypatch):
+def test_a_tweet_keeps_its_exact_wording():
     """X posts have no transcript — the text lives in the caption, which never
     reached the note. All 11 saved tweets had no verbatim text anywhere."""
-    monkeypatch.setattr(bot, "PROJECT_DIR", tmp_path)
     tweet = "The exact words of the post, which I may want to quote later."
-    media = {"platform": "twitter", "caption": tweet}
-    rel = bot._write_vault_note({"title": "T", "folder": folders.STARTUP},
-                                "https://x.com/a/status/1", "", "2026-08-16", media)
-    text = (tmp_path / "vault" / rel).read_text()
+    text = _note_text({"title": "T", "folder": folders.STARTUP},
+                      "https://x.com/a/status/1", "",
+                      {"platform": "twitter", "caption": tweet})
     assert tweet in text
     assert "## Post text" in text, "an X post's caption IS the post"
 
 
-def test_a_caption_is_not_duplicated_when_it_equals_the_transcript(tmp_path, monkeypatch):
-    monkeypatch.setattr(bot, "PROJECT_DIR", tmp_path)
+def test_a_caption_is_not_duplicated_when_it_equals_the_transcript():
     same = "identical text"
-    rel = bot._write_vault_note({"title": "T", "folder": folders.MINDSET},
-                                "https://x.test/2", same, "2026-08-16",
-                                {"platform": "instagram", "caption": same})
-    assert (tmp_path / "vault" / rel).read_text().count(same) == 1
+    text = _note_text({"title": "T", "folder": folders.MINDSET},
+                      "https://x.test/2", same,
+                      {"platform": "instagram", "caption": same})
+    assert text.count(same) == 1
 
 
 def test_a_video_with_no_speech_says_so_instead_of_going_quiet():
