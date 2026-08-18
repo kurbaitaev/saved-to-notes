@@ -1,0 +1,33 @@
+name: SavedToNotes
+options:
+  bundleIdPrefix: com.kurbaitaev
+  deploymentTarget:
+    iOS: "18.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: ""
+    CODE_SIGNING_REQUIRED: "NO"
+    CODE_SIGN_IDENTITY: ""
+targets:
+  SavedToNotes:
+    type: application
+    platform: iOS
+    sources:
+      - path: SavedToNotes/Sources
+    info:
+      path: SavedToNotes/Info.plist
+      properties:
+        CFBundleDisplayName: Saved
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.kurbaitaev.savedtonotes
+        MARKETING_VERSION: "0.1"
+        CURRENT_PROJECT_VERSION: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: ""
+        TARGETED_DEVICE_FAMILY: "1"
