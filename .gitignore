@@ -24,3 +24,9 @@ venv/
 
 # Cross-process lock file (created at runtime)
 .ledger.lock
+
+# iOS app: generated project and the file holding the Notion token
+ios/SavedToNotes.xcodeproj/
+ios/SavedToNotes/Sources/Secrets.swift
+ios/build/
+ios/DerivedData/
