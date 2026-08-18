@@ -137,7 +137,8 @@ def main():
     args = ap.parse_args()
     load_env()
     if not (os.environ.get("NOTION_TOKEN") and os.environ.get("NOTION_DATABASE_ID")):
-        print("Notion is not configured in .env"); return 1
+        print("Notion is not configured in .env")
+        return 1
 
     print(f"\n{'DRY RUN' if args.dry_run else 'APPLYING'}\n")
     print("1. Notion property")
