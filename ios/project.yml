@@ -22,6 +22,11 @@ targets:
       path: SavedToNotes/Info.plist
       properties:
         CFBundleDisplayName: Saved
+        # Point at the build settings instead of hardcoding. xcodegen otherwise
+        # writes a literal "1" here, which silently ignored the build number
+        # release.sh passes — so the second upload would collide with the first.
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleShortVersionString: $(MARKETING_VERSION)
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
