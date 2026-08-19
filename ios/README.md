@@ -36,14 +36,20 @@ Launch flags for checking a screen without tapping through the app:
 The app never invents a question. People who write their own quiz questions get
 no benefit from answering them and tend to do *worse* than if they had reread,
 because they aim at the wrong material (Myers, Hausman & Rhodes 2024). So the
-question comes from the agent:
+question comes from the agent.
+
+**New notes get one automatically** — the bot writes it at save time, into the
+note's frontmatter and the `Review question` column in Notion.
+
+Notes saved before that shipped need a backfill, oldest first:
 
 ```bash
-python3 ../review_questions.py --limit 20      # oldest notes first
+python3 ../review_questions.py --limit 30
 ```
 
-That fills a `Review question` column in Notion. Notes without one are skipped
-in review rather than faked.
+The rules both paths follow live in `review.py`, not in the prompt file. Notes
+too thin to support a real question get none, and are skipped in review rather
+than faked.
 
 A note becomes reviewable **7 days** after it was saved, and the ladder is
 10 → 30 → 90 days on recall, 3 days on a miss. Deliberately loose: the penalty

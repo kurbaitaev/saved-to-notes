@@ -36,6 +36,7 @@ import agent_openai
 import folders
 import ledger
 import notion
+import review
 import topics
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -88,7 +89,8 @@ def _load_prompt() -> str:
     text = PROMPT_FILE.read_text()
     return (text.replace("{{FOLDER_LIST}}", " | ".join(folders.FOLDERS))
                 .replace("{{FOLDER_RULES}}", folders.RULES)
-                .replace("{{TOPIC_RULES}}", topics.RULES))
+                .replace("{{TOPIC_RULES}}", topics.RULES)
+                .replace("{{REVIEW_RULES}}", review.RULES))
 
 
 def _media_context(url: str, media: dict, user_note: str = "") -> str:
@@ -461,6 +463,9 @@ def _sanitize(obj: dict) -> dict:
     # Exactly one valid folder, always — it decides where the note is filed.
     obj["folder"] = folders.normalize(obj.get("folder"))
     obj["topics"] = topics.normalize_list(obj.get("topics"))
+    # Dropped unless it is really a question — the app shows this as a
+    # prompt to answer, and a statement there reads as nonsense.
+    obj["review_question"] = review.clean(obj.get("review_question"))
     return obj
 
 
@@ -978,7 +983,10 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str,
     L = ["---", f"source: {url}", f"date: {today}", "type: reel-note",
          f"folder: {folder}", f"topics: [{topic_list}]",
          f"content_type: {obj.get('content_type', '')}", f"kind: {obj.get('kind', '')}",
-         f"categories: [{cats}]", "status: inbox", "---", "", f"# {title}", ""]
+         f"categories: [{cats}]", "status: inbox"]
+    if obj.get("review_question"):
+        L.append(f"review_question: {obj['review_question']}")
+    L += ["---", "", f"# {title}", ""]
     if _ok(quote):
         L.append(f"> {quote}")
         if _ok(author):

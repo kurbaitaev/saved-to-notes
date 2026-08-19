@@ -112,6 +112,8 @@ quotes. Keep every field short — one sentence unless it's a list.
 
 {{TOPIC_RULES}}
 
+{{REVIEW_RULES}}
+
 ## 5. Output — ONE JSON object between the markers
 ```
 @@JSON@@
@@ -135,6 +137,7 @@ quotes. Keep every field short — one sentence unless it's a list.
     {"type": "book|podcast|tool|product|resource|video|channel|concept", "name": "...", "author": "", "link": "", "verified": true, "verify_note": ""}
   ],
   "why_save": "one sentence",
+  "review_question": "one higher-order question, or \"\" if the note can't support one",
   "tags": ["tag1", "tag2", "tag3"],
   "description": "1–2 line factual description",
   "summary": "short factual summary",

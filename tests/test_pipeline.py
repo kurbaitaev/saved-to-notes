@@ -41,6 +41,7 @@ import bot  # noqa: E402
 import folders  # noqa: E402
 import ledger  # noqa: E402
 import notion  # noqa: E402
+import review  # noqa: E402
 import topics  # noqa: E402
 
 
@@ -723,3 +724,37 @@ if __name__ == "__main__":
                 print(f"  FAIL  {name}: {type(e).__name__}: {e}")
     print(f"\n{'FAILED' if failed else 'all passed'} ({failed} failure(s))")
     sys.exit(1 if failed else 0)
+
+
+# --- review questions ----------------------------------------------------
+# The app shows this as a prompt to answer, so anything that isn't a question
+# is worse than nothing.
+
+def test_only_real_questions_survive():
+    assert review.clean("Why would this fail at your scale?") == "Why would this fail at your scale?"
+    assert review.clean("  Why   does\n this work? ") == "Why does this work?"
+    for junk in ["This is a statement.", "", None, "Ok?", 42, ["a?"]]:
+        assert review.clean(junk) == "", junk
+
+
+def test_review_question_reaches_the_openai_schema():
+    """topics once existed in the prompt but not in the strict schema, so the
+    model was structurally forbidden from returning it. Same trap, same guard."""
+    props = agent_openai.SCHEMA["properties"]
+    assert "review_question" in props
+    assert "review_question" in agent_openai.SCHEMA["required"]
+    assert set(agent_openai.SCHEMA["required"]) == set(props), \
+        "strict mode requires every property to be listed in required"
+
+
+def test_the_question_rules_have_exactly_one_source():
+    """They used to be hand-copied, and the copy went stale."""
+    import review_questions
+    assert review.RULES in review_questions.PROMPT
+    assert "{{REVIEW_RULES}}" not in bot._load_prompt()
+    assert "Higher-order, not recall" in bot._load_prompt()
+
+
+def test_a_note_without_a_question_writes_no_frontmatter_line():
+    obj = bot._sanitize({"title": "T", "review_question": "not a question"})
+    assert obj["review_question"] == ""
