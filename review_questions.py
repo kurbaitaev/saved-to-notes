@@ -24,6 +24,9 @@ import sys
 import time
 import urllib.request
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import review  # noqa: E402
+
 PROJ = pathlib.Path(__file__).resolve().parent
 PROP = "Review question"
 BATCH = 6          # notes per agent call — one call for many is far cheaper
@@ -99,15 +102,9 @@ def rows_needing_questions(limit):
     return out
 
 
-PROMPT = """For each saved note below, write ONE question the person should be able to
-answer from memory weeks later.
+PROMPT = review.RULES + """
 
-Rules:
-- Higher-order, not factual recall. Ask why something works, when it would fail,
-  or how it changes a decision — not "what did the post say".
-- Answerable from the note's own content. Never require outside knowledge.
-- One sentence, under 25 words, ending in a question mark.
-- Address the reader as "you".
+Apply the rules above to each saved note below.
 
 Return ONLY a JSON array, one object per note, in the same order:
 [{"id": "<the id given>", "question": "..."}]
