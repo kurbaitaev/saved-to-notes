@@ -22,6 +22,9 @@ import urllib.request
 
 import article
 
+# Re-exported: everything downstream says acquire.AcquireError.
+from errors import AcquireError  # noqa: F401
+
 log = logging.getLogger("saved-to-notes.acquire")
 
 TMP = pathlib.Path("/tmp/saved-to-notes")
@@ -79,13 +82,6 @@ def no_speech_warning(have_local: bool) -> str:
         else "Local transcription is unavailable: pip install openai-whisper"))
 
 
-class AcquireError(RuntimeError):
-    """retryable=False means it can never succeed (deleted, private, no media),
-    so the link is released instead of being retried on every restart."""
-
-    def __init__(self, message: str, retryable: bool = True):
-        super().__init__(message)
-        self.retryable = retryable
 
 
 _IG_RE = re.compile(

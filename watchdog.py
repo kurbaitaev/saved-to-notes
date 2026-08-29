@@ -41,6 +41,25 @@ def bot_running() -> bool:
     return bool(r.stdout.strip())
 
 
+def ghost_bot_paths() -> list[str]:
+    """Bot processes whose script no longer exists on disk.
+
+    When the project folder was moved, launchd kept the old process alive in a
+    deleted directory: pgrep said "running", every message crashed, and this
+    watchdog — itself the stale copy — noticed nothing. A process is only
+    healthy if the file it was started from is still there.
+    """
+    r = subprocess.run(["pgrep", "-fl", "saved-to-notes/bot.py"],
+                       capture_output=True, text=True)
+    ghosts = []
+    for line in r.stdout.splitlines():
+        parts = line.split(None, 2)
+        script = next((p for p in parts[1:] if p.endswith("bot.py")), None)
+        if script and not pathlib.Path(script).exists():
+            ghosts.append(script)
+    return ghosts
+
+
 def telegram_ok(token: str) -> bool:
     try:
         with urllib.request.urlopen(f"https://api.telegram.org/bot{token}/getMe", timeout=15) as r:
@@ -166,6 +185,23 @@ def main() -> None:
     load_env()
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat = os.environ.get("ALLOWED_USER_IDS", "").split(",")[0].strip()
+
+    # The watchdog can only vouch for a project that still exists where it was
+    # installed. If it has been moved out from under us, say so loudly — a
+    # restart from a stale plist would just resurrect the broken state.
+    if not (PROJ / "bot.py").exists():
+        wlog(f"PROJECT MOVED — {PROJ} no longer contains bot.py")
+        alert(token, chat, "🚨 The bot's folder has moved or been deleted. "
+                           "Run ./install.sh from its new location — until then "
+                           "nothing is being saved.")
+        return
+    ghosts = ghost_bot_paths()
+    if ghosts:
+        subprocess.run(["pkill", "-f", "saved-to-notes/bot.py"], check=False)
+        wlog(f"killed ghost bot running from deleted path: {ghosts}")
+        restart()
+        alert(token, chat, "🔧 Found the bot running from a deleted folder (it was "
+                           "moved). Killed it and restarted from the current one.")
 
     if ensure_workspace_trust():
         wlog("workspace trust flag was missing -> restored")

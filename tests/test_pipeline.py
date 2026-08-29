@@ -758,3 +758,44 @@ def test_the_question_rules_have_exactly_one_source():
 def test_a_note_without_a_question_writes_no_frontmatter_line():
     obj = bot._sanitize({"title": "T", "review_question": "not a question"})
     assert obj["review_question"] == ""
+
+
+# --- content dedup -------------------------------------------------------
+# The vault held the same reel twice under two URLs, and the same video once
+# from Instagram and once from TikTok. URL dedup is structurally blind to both.
+
+def test_fingerprints_catch_reposts_but_not_neighbours():
+    """Threshold from measurement, not hope: across all 31,878 pairs in the
+    vault, true duplicates sit at distance 3 and the closest unrelated pair at
+    11 — so identical content must match, and unrelated must clear SAME."""
+    import textsig
+    base = ("Your screen time is not the problem, the direction of it is. One hour "
+            "a day compounds into real skill if you point it somewhere deliberate. "
+            "Editing, sales, memory, whatever, the hours are already being paid. ") * 4
+    same = textsig.sig(base)
+    suffixed = textsig.sig(base + " follow for more daily tips link in bio")
+    other = textsig.sig(("Six concrete activities to replace mindless doomscrolling, "
+                         "from intentional online learning to offline physical "
+                         "activity, deep reading and skill practice sessions. ") * 4)
+    assert textsig.distance(same, textsig.sig(base)) == 0
+    # a suffixed repost stays far closer than unrelated content, even when it
+    # falls just past SAME — the ordering is what the design relies on
+    assert textsig.distance(same, suffixed) < textsig.distance(same, other)
+    assert textsig.distance(same, other) > textsig.SAME
+
+
+def test_too_little_text_never_fingerprints():
+    """A signature of near-nothing matches everything — refuse to make one."""
+    import textsig
+    assert textsig.sig("short caption") == ""
+    assert textsig.distance("", "abc") == 64
+
+
+def test_ledger_entries_stay_slim():
+    """The ledger once stored every note's full rendering forever — 1.5MB of
+    JSON rewritten under a lock on every message. Only pointers belong here."""
+    import inspect
+    src = inspect.getsource(bot)
+    put_call = src[src.index('ledger.put(url, {'):][:400]
+    for heavy in ('"markdown"', '"blocks"', '"digest"'):
+        assert heavy not in put_call, f"{heavy} crept back into ledger.put"
