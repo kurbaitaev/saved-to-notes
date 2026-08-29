@@ -29,6 +29,8 @@ import re
 import urllib.parse
 import urllib.request
 
+from errors import AcquireError
+
 log = logging.getLogger("saved-to-notes.article")
 
 # Anything below this is a cookie wall, a paywall stub or a failed render
@@ -234,8 +236,6 @@ def acquire(url: str) -> dict:
     survives the original going behind a paywall — which is most of the reason
     to save an article at all.
     """
-    from acquire import AcquireError  # local import: acquire imports this module
-
     got = fetch(url)
     text = got.get("text", "")
     if not text:

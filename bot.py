@@ -37,6 +37,7 @@ import folders
 import ledger
 import notion
 import review
+import textsig
 import topics
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -271,11 +272,13 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
     url = acquire.normalize_url(url)  # strip ?igsh=… so the same reel is one key
     cached = ledger.get(url)
     if cached and cached.get("status") == "done" and not force:
-        note = "\n\n(already processed — send /force to redo)"
-        md = cached.get("markdown")
-        return Result(cached["digest"] + note,
-                      (md + "<br><br><i>(already processed — /force to redo)</i>" if md else None),
-                      cached.get("blocks"), SAVED)
+        # The full card used to be replayed from the ledger, which meant storing
+        # every note's rendering forever — 1.5MB of JSON re-written under a lock
+        # on every message. A pointer to the saved note does the same job.
+        title = cached.get("title") or cached.get("digest", "")[:80] or "this link"
+        where = f" ({cached['path']})" if cached.get("path") else ""
+        return Result(f"✅ Already saved as <b>{html.escape(title)}</b>{where}.\n"
+                      "Send /force to redo it.", None, None, SAVED)
 
     if media is None:
         # Acquisition is blocking I/O — keep the event loop free.
@@ -289,6 +292,24 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
             tail = "\n\nStill queued — it'll retry." if outcome == RETRYABLE else ""
             return Result(f"❌ Couldn't fetch that link:\n{e}{tail}", None, None, outcome)
     t_acquired = time.monotonic()
+
+    # Same content under a different link — a repost, or the platform serving
+    # one post through two URLs. URL dedup is blind to it: this vault held the
+    # same reel under two Instagram URLs, and one video saved from both
+    # Instagram and TikTok. The fingerprint catches what the URL can't.
+    fp = textsig.sig(media.get("transcript") or media.get("caption") or "")
+    if fp and not force:
+        for other_url, entry in ledger.all_done().items():
+            if other_url != url and textsig.distance(fp, entry.get("sig", "")) <= textsig.SAME:
+                await asyncio.to_thread(acquire.cleanup, media)
+                title = entry.get("title") or other_url
+                return Result(
+                    "♻️ You saved this already — same content, different link.\n"
+                    f"<b>{html.escape(title)}</b> ({entry.get('path', 'in the vault')}), "
+                    f"saved {entry.get('ts', '')[:10]}.\n"
+                    f"Original: {html.escape(other_url)}\n\n"
+                    "Send /force with this link if you want a second note anyway.",
+                    None, None, PERMANENT)
 
     if on_progress:
         await on_progress("acquired")
@@ -349,13 +370,16 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
     sinks = [asyncio.to_thread(_write_vault_note, obj, url, transcript, date_iso, media)]
     if notion.enabled():
         sinks.append(asyncio.to_thread(_sync_notion, obj, media, url, transcript, date_iso))
+    vault_rel = ""
     # A failing sink must NOT abort delivery or skip ledger.put (else the reel is
     # lost: stuck placeholder, never marked done, pending removed → no recovery).
     sink_errors = []
-    for r in await asyncio.gather(*sinks, return_exceptions=True):
+    for i, r in enumerate(await asyncio.gather(*sinks, return_exceptions=True)):
         if isinstance(r, Exception):
             log.warning("sink (vault/Notion) failed for %s: %s", url, r)
             sink_errors.append(str(r))
+        elif i == 0:
+            vault_rel = r or ""
 
     message = render_telegram(obj, url)
     rich_md = render_rich(obj, url, transcript)
@@ -380,9 +404,9 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
         rich_md += "<br><br>" + html.escape(warn)
     ledger.put(url, {
         "status": "done",
-        "digest": message,
-        "markdown": rich_md,
-        "blocks": rich_blocks,
+        "title": str(obj.get("title") or "")[:120],
+        "path": vault_rel,
+        "sig": fp,
         "platform": media.get("platform"),
         "ts": datetime.datetime.now().isoformat(timespec="seconds"),
     })

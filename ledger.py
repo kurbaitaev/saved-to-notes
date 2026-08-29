@@ -70,6 +70,12 @@ def get(url: str) -> dict | None:
     return _load().get(url)
 
 
+def all_done() -> dict:
+    """Every completed entry — the content-dedup sweep reads sig/title/path."""
+    return {u: r for u, r in _load().items()
+            if isinstance(r, dict) and r.get("status") == "done"}
+
+
 def put(url: str, record: dict) -> None:
     with _exclusive():
         data = _load()
