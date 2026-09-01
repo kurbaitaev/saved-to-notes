@@ -3,7 +3,7 @@ python-telegram-bot>=22.8
 
 # Only needed for the OpenAI backend (OPENAI_API_KEY). The Claude Code CLI
 # backend doesn't use it.
-openai>=2.52.0
+openai>=3.6.0
 
 # Articles, newsletters and blog posts. Without it those links fall back to
 # Jina Reader, which works but sends the URL to a third party — see article.py.
