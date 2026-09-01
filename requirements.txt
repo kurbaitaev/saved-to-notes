@@ -7,7 +7,7 @@ openai>=2.52.0
 
 # Articles, newsletters and blog posts. Without it those links fall back to
 # Jina Reader, which works but sends the URL to a third party — see article.py.
-trafilatura>=2.0.0
+trafilatura>=2.2.0
 
 # Not installable via pip — see README, and run `python3 doctor.py` to check:
 #   claude    Claude Code CLI   https://claude.com/product/claude-code  (only for the CLI backend)
