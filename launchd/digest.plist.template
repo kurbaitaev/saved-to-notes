@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Generated into ~/Library/LaunchAgents by install.sh. Placeholders: __LABEL__ __PYTHON__ __DIR__ __HOME__ -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>__LABEL__-digest</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__PYTHON__</string>
+        <string>__DIR__/digest.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>__DIR__</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>__HOME__</string>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <!-- Sunday 18:00. launchd runs a missed slot at next wake, so a closed lid
+         delays the digest rather than losing it. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key><integer>0</integer>
+        <key>Hour</key><integer>18</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>__DIR__/logs/digest.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>__DIR__/logs/digest.err.log</string>
+</dict>
+</plist>

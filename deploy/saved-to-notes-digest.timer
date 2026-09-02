@@ -1,0 +1,10 @@
+[Unit]
+Description=Run the saved-to-notes digest every Sunday at 18:00
+
+[Timer]
+OnCalendar=Sun 18:00
+# A server that was down at 18:00 sends it on boot instead of skipping a week.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

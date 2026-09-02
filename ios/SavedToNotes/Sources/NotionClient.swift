@@ -104,6 +104,28 @@ struct NotionClient {
         return Script(paragraphs: paras)
     }
 
+    // MARK: - Review answers
+
+    /// Record one answer on the note's Notion page. The counts live in Notion
+    /// rather than only on this phone so the weekly digest can read them —
+    /// and so the number nobody in this category has ever published (do people
+    /// actually remember what they saved?) accumulates somewhere durable.
+    func recordReview(pageID: String, recalled: Bool) async throws {
+        let page = try await request(URL(string: "https://api.notion.com/v1/pages/\(pageID)")!, method: "GET")
+        let props = page["properties"] as? [String: Any] ?? [:]
+        let reviews = ((props["Reviews"] as? [String: Any])?["number"] as? Int ?? 0) + 1
+        let hits = ((props["Recalled"] as? [String: Any])?["number"] as? Int ?? 0) + (recalled ? 1 : 0)
+        let today = ISO8601DateFormatter().string(from: Date()).prefix(10)
+        _ = try await request(
+            URL(string: "https://api.notion.com/v1/pages/\(pageID)")!, method: "PATCH",
+            body: ["properties": [
+                "Reviews": ["number": reviews],
+                "Recalled": ["number": hits],
+                "Last reviewed": ["date": ["start": String(today)]],
+                "Last result": ["select": ["name": recalled ? "recalled" : "missed"]],
+            ]])
+    }
+
     // MARK: - Field helpers
     // Notion wraps every value in its own shape; these keep that noise in one place.
 

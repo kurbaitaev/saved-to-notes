@@ -1,0 +1,9 @@
+[Unit]
+Description=saved-to-notes weekly digest
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DIR__
+ExecStart=__PYTHON__ __DIR__/digest.py
+StandardOutput=append:__DIR__/logs/digest.out.log
+StandardError=append:__DIR__/logs/digest.err.log
