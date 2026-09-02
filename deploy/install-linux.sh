@@ -16,9 +16,10 @@ if [ ! -f "$HERE/.env" ]; then
   echo "error: no .env yet. Run:  cp .env.example .env  then fill it in." >&2
   exit 1
 fi
-if ! grep -qE '^(ANTHROPIC_API_KEY|OPENAI_API_KEY)=.+' "$HERE/.env"; then
-  echo "error: a server has no Claude login keychain. Put ANTHROPIC_API_KEY (or" >&2
-  echo "       OPENAI_API_KEY) in .env — otherwise every note fails at the agent." >&2
+if ! grep -qE '^(ANTHROPIC_API_KEY|OPENAI_API_KEY)=.+' "$HERE/.env" \
+   && ! grep -q '"claudeAiOauth"' "$HOME/.claude/.credentials.json" 2>/dev/null; then
+  echo "error: no reasoning backend. Either put ANTHROPIC_API_KEY (or OPENAI_API_KEY)" >&2
+  echo "       in .env, or log the Claude CLI in on this machine (claude → /login)." >&2
   exit 1
 fi
 command -v systemctl >/dev/null || { echo "error: systemd not found." >&2; exit 1; }

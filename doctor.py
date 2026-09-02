@@ -14,6 +14,8 @@ import shutil
 import subprocess
 import sys
 
+import claude_login  # noqa: E402
+
 PROJ = pathlib.Path(__file__).resolve().parent
 OK, BAD, OPT = "\033[32mOK\033[0m", "\033[31mMISSING\033[0m", "\033[33mOPTIONAL\033[0m"
 problems = 0
@@ -34,7 +36,6 @@ def need(cond: bool, name: str, fix: str, detail: str = "") -> None:
 
 def _apify_usage(token: str) -> tuple[float | None, float | None]:
     """(spent this month, monthly cap) in USD, or (None, None) if unreachable."""
-    import json
     import urllib.request
     try:
         with urllib.request.urlopen(
@@ -90,28 +91,23 @@ def main() -> int:
          "send /start to your bot to learn your id, then put it in .env "
          "(without it the bot refuses everyone)")
 
-    # Reasoning backend: an API key works anywhere; the CLI login is Mac-only
-    # and expires. Exactly one of these must be usable.
+    # Reasoning backend: an API key, or a CLI login (keychain on macOS, a
+    # credentials file on Linux). Exactly one of these must be usable.
     openai_key = bool(env("OPENAI_API_KEY"))
     anthropic_key = bool(env("ANTHROPIC_API_KEY"))
     cli = bool(shutil.which("claude"))
     logged_in = False
     if cli and not (openai_key or anthropic_key):
-        try:
-            r = subprocess.run(["security", "find-generic-password", "-s",
-                                "Claude Code-credentials", "-w"],
-                               capture_output=True, text=True, timeout=10)
-            blob = json.loads(r.stdout.strip()).get("claudeAiOauth", {})
-            exp = blob.get("expiresAt") or 0
-            logged_in = bool(exp) and exp / 1000 >= __import__("time").time()
-        except Exception:  # noqa: BLE001
-            logged_in = False
+        blob = claude_login.oauth_blob()
+        # A refreshable session counts: access tokens roll over hourly on
+        # their own, as long as the CLI keeps being used.
+        logged_in = claude_login.session_valid(blob) or claude_login.can_refresh(blob)
     if openai_key:
         backend = f"OpenAI ({env('OPENAI_MODEL') or 'gpt-5.6-terra'})"
     elif anthropic_key:
         backend = "Anthropic API key"
     elif logged_in:
-        backend = "Claude CLI login (expires; not usable on a server)"
+        backend = claude_login.describe() + " — refreshes itself while in use"
     else:
         backend = ""
     need(bool(backend), "reasoning backend",
