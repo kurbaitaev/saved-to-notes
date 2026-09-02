@@ -62,6 +62,9 @@ final class Store: ObservableObject {
     func grade(_ note: Note, recalled: Bool) {
         schedule.record(note.id, recalled: recalled)
         objectWillChange.send()
+        // Local schedule first so the card advances even offline; Notion is
+        // the shared ledger and a failure here must not block the next card.
+        Task { try? await client.recordReview(pageID: note.id, recalled: recalled) }
     }
 }
 

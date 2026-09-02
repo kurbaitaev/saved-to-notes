@@ -799,3 +799,50 @@ def test_ledger_entries_stay_slim():
     put_call = src[src.index('ledger.put(url, {'):][:400]
     for heavy in ('"markdown"', '"blocks"', '"digest"'):
         assert heavy not in put_call, f"{heavy} crept back into ledger.put"
+
+
+# --- weekly digest ---------------------------------------------------------
+# The loop-closer. Nothing comes back on its own (Bergman 2021: 16% of
+# bookmarks ever retrieved); the digest is what brings it.
+
+def _row(**kw):
+    base = {"title": "t", "url": "", "date": "2026-06-01", "question": "Why?",
+            "reviews": 0, "recalled": 0, "last_reviewed": "", "last_result": ""}
+    base.update(kw)
+    return base
+
+
+def test_digest_picks_the_oldest_note_never_asked_about():
+    import digest
+    rows = [_row(title="asked", reviews=2),
+            _row(title="no question", question=""),
+            _row(title="oldest unasked", date="2026-06-02"),
+            _row(title="newer unasked", date="2026-07-01")]
+    assert digest.oldest_unasked(rows)["title"] == "oldest unasked"
+    assert digest.oldest_unasked([_row(reviews=1)]) is None
+
+
+def test_digest_week_window_and_recall_rate():
+    import datetime as dt
+    import digest
+    today = dt.date(2026, 9, 6)
+    rows = [_row(reviews=1, recalled=1, last_reviewed="2026-09-05", last_result="recalled"),
+            _row(reviews=1, recalled=0, last_reviewed="2026-09-01", last_result="missed"),
+            _row(reviews=1, recalled=1, last_reviewed="2026-08-20", last_result="recalled"),  # too old
+            _row(reviews=0, last_reviewed="2026-09-05")]                          # never graded
+    week = digest.reviewed_in_window(rows, today)
+    assert len(week) == 2
+    assert digest.recall_rate(week) == (1, 2)
+    assert digest.lifetime(rows) == (2, 3)
+
+
+def test_digest_renders_html_safely_and_says_when_empty():
+    import datetime as dt
+    import digest
+    today = dt.date(2026, 9, 6)
+    text = digest.render(today, [], [], [])
+    assert "Nothing saved" in text and "No reviews" in text
+    text = digest.render(today, [{"date": "2026-09-05", "title": "A <b>bold</b> claim", "folder": "Mindset"}],
+                         [], [_row(title="x & y", question="Why <this>?", date="2026-06-01")])
+    assert "&lt;b&gt;bold&lt;/b&gt;" in text and "x &amp; y" in text
+    assert "<b>bold</b>" not in text

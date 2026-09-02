@@ -1,42 +1,52 @@
 #!/bin/bash
-# Install saved-to-notes as a systemd user service on a Linux VPS.
-# Run as the normal (non-root) user that owns the checkout:
+# Install saved-to-notes on a Linux VPS as systemd --user units:
+#   the bot (always on), the watchdog (every 90 min), the digest (Sunday 18:00).
+# Run as the normal user that owns the checkout, from anywhere:
 #   ./deploy/install-linux.sh
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")/.." && pwd)"
-PYTHON="${PYTHON:-$(command -v python3)}"
+# Prefer the project venv — a VPS without sudo can't apt-install anything, and
+# the system python must not be polluted.
+PYTHON="${PYTHON:-$HERE/.venv/bin/python}"
+[ -x "$PYTHON" ] || PYTHON="$(command -v python3)"
 UNIT_DIR="$HOME/.config/systemd/user"
-UNIT="saved-to-notes.service"
 
 if [ ! -f "$HERE/.env" ]; then
   echo "error: no .env yet. Run:  cp .env.example .env  then fill it in." >&2
   exit 1
 fi
-
-if ! command -v systemctl >/dev/null; then
-  echo "error: systemd not found. On macOS use ./install.sh instead." >&2
+if ! grep -qE '^(ANTHROPIC_API_KEY|OPENAI_API_KEY)=.+' "$HERE/.env"; then
+  echo "error: a server has no Claude login keychain. Put ANTHROPIC_API_KEY (or" >&2
+  echo "       OPENAI_API_KEY) in .env — otherwise every note fails at the agent." >&2
   exit 1
 fi
+command -v systemctl >/dev/null || { echo "error: systemd not found." >&2; exit 1; }
 
-mkdir -p "$HERE/logs" "$UNIT_DIR"
+mkdir -p "$HERE/logs" "$UNIT_DIR" /tmp/saved-to-notes
 
-sed -e "s|__DIR__|$HERE|g" -e "s|__PYTHON__|$PYTHON|g" \
-    "$HERE/deploy/$UNIT" > "$UNIT_DIR/$UNIT"
+render() { sed -e "s|__DIR__|$HERE|g" -e "s|__PYTHON__|$PYTHON|g" "$1"; }
+
+for unit in saved-to-notes.service \
+            saved-to-notes-watchdog.service saved-to-notes-watchdog.timer \
+            saved-to-notes-digest.service   saved-to-notes-digest.timer; do
+  render "$HERE/deploy/$unit" > "$UNIT_DIR/$unit"
+done
 
 systemctl --user daemon-reload
-systemctl --user enable --now "$UNIT"
+systemctl --user enable --now saved-to-notes.service
+systemctl --user enable --now saved-to-notes-watchdog.timer
+systemctl --user enable --now saved-to-notes-digest.timer
 
-# Without this the service stops when you log out of SSH.
-if command -v loginctl >/dev/null; then
+# Without linger the units stop the moment the SSH session ends.
+if ! loginctl show-user "$(id -un)" 2>/dev/null | grep -q "Linger=yes"; then
   loginctl enable-linger "$(id -un)" 2>/dev/null \
-    || echo "note: could not enable linger — run: sudo loginctl enable-linger $(id -un)"
+    || echo "NOTE: linger is off and needs root once:  sudo loginctl enable-linger $(id -un)"
 fi
 
 echo
-systemctl --user --no-pager status "$UNIT" | head -5
+systemctl --user --no-pager status saved-to-notes.service | head -5
+systemctl --user --no-pager list-timers 'saved-to-notes-*' | head -5
 echo
-echo "Done. Useful commands:"
-echo "  systemctl --user restart saved-to-notes     # after editing the code"
-echo "  systemctl --user status saved-to-notes"
-echo "  journalctl --user -u saved-to-notes -f      # live logs"
+echo "  systemctl --user restart saved-to-notes    # after git pull"
+echo "  journalctl --user -u saved-to-notes -f     # live logs"

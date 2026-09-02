@@ -28,7 +28,7 @@ render() {  # template -> plist
       -e "s|__HOME__|$HOME|g" "$1"
 }
 
-for pair in "bot.plist.template:$LABEL" "watchdog.plist.template:$LABEL-watchdog"; do
+for pair in "bot.plist.template:$LABEL" "watchdog.plist.template:$LABEL-watchdog" "digest.plist.template:$LABEL-digest"; do
   tpl="${pair%%:*}"; label="${pair##*:}"
   render "$HERE/launchd/$tpl" > "$AGENTS/$label.plist"
   launchctl bootout "$DOMAIN/$label" 2>/dev/null || true

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the saved-to-notes watchdog every 90 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=90min
+
+[Install]
+WantedBy=timers.target
