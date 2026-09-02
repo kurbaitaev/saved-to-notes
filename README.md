@@ -78,7 +78,32 @@ python3 bot.py --test "https://www.instagram.com/reel/..."
 
 The agent's permissions live in [.claude/settings.json](.claude/settings.json), and Claude Code ignores them in a directory you haven't trusted. Run `claude` once inside the project folder and accept the trust prompt — otherwise web search is silently disabled and links come back unverified. The watchdog re-checks this and repairs it if a future login resets it.
 
-## Keeping it running
+## Running it on a server
+
+The bot is portable: it runs on a Linux VPS with a Claude CLI login (a Max or
+Pro subscription works — the login lives in `~/.claude/.credentials.json`, no
+keychain needed) or an API key. `deploy/install-linux.sh` installs three
+`systemd --user` units against the project venv: the bot, a watchdog every
+90 minutes, and the weekly digest. It refuses to install without a reasoning
+backend, because every note would otherwise fail at the agent step.
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+cp .env.example .env            # fill it in
+claude                          # → /login once, then exit
+./deploy/install-linux.sh
+```
+
+Two things a server needs that a Mac doesn't: `loginctl enable-linger <user>`
+(root, once) so the units survive SSH disconnects, and the workspace trust flag
+in `~/.claude.json` — the watchdog sets it if missing. Only one machine may run
+the bot at a time: Telegram allows a single polling listener.
+
+The vault is written wherever the bot runs. If that is a server and you read
+notes in Obsidian on a laptop, sync `vault/` back (a private git repo pushed
+after each save works; see [docs](docs/)).
+
+## Keeping it running (macOS)
 
 ```bash
 ./install.sh        # installs two launchd services: the bot + a watchdog
