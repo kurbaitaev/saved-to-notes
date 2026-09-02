@@ -32,8 +32,16 @@ for pair in "bot.plist.template:$LABEL" "watchdog.plist.template:$LABEL-watchdog
   tpl="${pair%%:*}"; label="${pair##*:}"
   render "$HERE/launchd/$tpl" > "$AGENTS/$label.plist"
   launchctl bootout "$DOMAIN/$label" 2>/dev/null || true
-  launchctl bootstrap "$DOMAIN" "$AGENTS/$label.plist"
-  echo "installed + started: $label"
+  # bootout is asynchronous; bootstrapping the same label a moment later can
+  # fail with "Input/output error". With set -e that used to abort the whole
+  # script here, so any job after the first never got rendered at all.
+  ok=0
+  for attempt in 1 2 3; do
+    if launchctl bootstrap "$DOMAIN" "$AGENTS/$label.plist" 2>/dev/null; then ok=1; break; fi
+    sleep 2
+  done
+  if [ "$ok" = 1 ]; then echo "installed + started: $label"
+  else echo "WARNING: could not start $label — run: launchctl bootstrap $DOMAIN $AGENTS/$label.plist"; fi
 done
 
 echo
