@@ -18,6 +18,15 @@ ASC_ISSUER=${ASC_ISSUER:-4cd18058-a288-478e-9bf4-4d8accc67911}
 [ -f "$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8" ] || {
   echo "Missing AuthKey_$ASC_KEY_ID.p8 in ~/.appstoreconnect/private_keys/"; exit 1; }
 
+# App Store Connect rejects uploads built with a beta Xcode (error 90534,
+# "Unsupported SDK or Xcode version") once a newer beta ships — and the Mac's
+# global xcode-select points at the beta for other work. Build with the stable
+# Xcode when it exists, without changing the global selection.
+if [ -z "${DEVELOPER_DIR:-}" ] && [ -d /Applications/Xcode.app/Contents/Developer ]; then
+  export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
+fi
+echo "==> xcode: $(xcodebuild -version | tr '\n' ' ')"
+
 ./configure.sh >/dev/null            # Notion token + regenerate the project
 
 # Every upload needs a build number App Store Connect has not seen before.
