@@ -17,6 +17,8 @@ import time
 import urllib.parse
 import urllib.request
 
+import claude_login  # noqa: E402
+
 PROJ = pathlib.Path(__file__).resolve().parent
 LABEL = "com.kurbaitaev.saved-to-notes"
 LOG = PROJ / "logs" / "bot.err.log"
@@ -123,28 +125,21 @@ def claude_token_expired() -> bool:
     """
     if _AUTH_FAILED.exists():
         return True
-    if not IS_MAC:
-        # No login keychain off macOS, and a server runs on an API key anyway —
-        # the .auth_failed flag above is the signal that matters there.
+    blob = claude_login.oauth_blob()
+    if not blob:
+        # Nothing to read at all. On a server this is normal when an API key is
+        # in use; the .auth_failed flag above is the real signal there.
         return False
-    try:
-        r = subprocess.run(["security", "find-generic-password", "-s", "Claude Code-credentials", "-w"],
-                           capture_output=True, text=True, timeout=10)
-        blob = json.loads(r.stdout.strip()).get("claudeAiOauth", {})
-        exp = blob.get("expiresAt") or 0
-        has_session = bool(exp) and (exp / 1000) >= time.time()
-        if has_session:
-            _AUTH_SEEN.unlink(missing_ok=True)
-            return False
-        if blob.get("refreshToken"):
-            # Access tokens expire hourly and refresh silently; only alert if
-            # that never happens over several checks.
-            first = float(_AUTH_SEEN.read_text()) if _AUTH_SEEN.exists() else time.time()
-            _AUTH_SEEN.write_text(str(first))
-            return (time.time() - first) > AUTH_GRACE_S
-        return True  # no valid session and nothing to refresh with
-    except Exception:  # noqa: BLE001
-        return False  # can't read → don't false-alarm
+    if claude_login.session_valid(blob):
+        _AUTH_SEEN.unlink(missing_ok=True)
+        return False
+    if claude_login.can_refresh(blob):
+        # Access tokens expire hourly and refresh silently; only alert if
+        # that never happens over several checks.
+        first = float(_AUTH_SEEN.read_text()) if _AUTH_SEEN.exists() else time.time()
+        _AUTH_SEEN.write_text(str(first))
+        return (time.time() - first) > AUTH_GRACE_S
+    return True  # no valid session and nothing to refresh with
 
 
 def check_claude_auth(token: str, chat: str) -> None:

@@ -846,3 +846,32 @@ def test_digest_renders_html_safely_and_says_when_empty():
                          [], [_row(title="x & y", question="Why <this>?", date="2026-06-01")])
     assert "&lt;b&gt;bold&lt;/b&gt;" in text and "x &amp; y" in text
     assert "<b>bold</b>" not in text
+
+
+# --- claude login detection ------------------------------------------------
+# doctor and watchdog each read only the macOS keychain, so on the server both
+# said "no login" while `claude -p` was answering fine on a Max subscription.
+
+def test_login_reader_treats_logged_out_as_invalid_not_immortal():
+    import claude_login
+    now = 1_700_000_000.0
+    assert claude_login.session_valid({"expiresAt": (now + 3600) * 1000}, now)
+    assert not claude_login.session_valid({"expiresAt": (now - 1) * 1000}, now)
+    assert not claude_login.session_valid({"expiresAt": 0}, now)      # the old misread
+    assert not claude_login.session_valid({}, now)
+    assert claude_login.can_refresh({"refreshToken": "r"})
+    assert not claude_login.can_refresh({})
+
+
+def test_login_reader_uses_the_credentials_file_off_mac(monkeypatch, tmp_path):
+    import claude_login
+    f = tmp_path / ".credentials.json"
+    f.write_text(json.dumps({"claudeAiOauth": {"accessToken": "a", "refreshToken": "r",
+                                                "expiresAt": 1, "subscriptionType": "max"}}))
+    monkeypatch.setattr(claude_login, "IS_MAC", False)
+    monkeypatch.setattr(claude_login, "CRED_FILE", f)
+    blob = claude_login.oauth_blob()
+    assert blob["subscriptionType"] == "max"
+    assert "credentials.json" in claude_login.describe(blob)
+    monkeypatch.setattr(claude_login, "CRED_FILE", tmp_path / "missing.json")
+    assert claude_login.oauth_blob() == {}
