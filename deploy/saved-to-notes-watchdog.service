@@ -4,6 +4,8 @@ Description=saved-to-notes watchdog (auth expiry, workspace trust, ghost process
 [Service]
 Type=oneshot
 WorkingDirectory=__DIR__
+# A user unit's PATH omits ~/.local/bin, where the Claude CLI installs.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=__PYTHON__ __DIR__/watchdog.py
 StandardOutput=append:__DIR__/logs/watchdog.out.log
 StandardError=append:__DIR__/logs/watchdog.err.log
