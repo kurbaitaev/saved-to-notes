@@ -42,7 +42,26 @@ import topics
 
 PROJECT_DIR = Path(__file__).resolve().parent
 PROMPT_FILE = PROJECT_DIR / "agent_prompt.md"
-CLAUDE_BIN = shutil.which("claude") or "/opt/homebrew/bin/claude"
+def _find_claude() -> str:
+    """The CLI's location depends on how it was installed, and a service's
+    PATH is not a shell's. A systemd user unit sees /usr/bin but not
+    ~/.local/bin, where the native installer puts it — so which() failed on
+    the server and the old Mac-only fallback raised FileNotFoundError on
+    every note. Check the known homes explicitly; CLAUDE_BIN overrides."""
+    explicit = os.environ.get("CLAUDE_BIN", "").strip()
+    if explicit:
+        return explicit
+    found = shutil.which("claude")
+    if found:
+        return found
+    for cand in (Path.home() / ".local/bin/claude", Path("/opt/homebrew/bin/claude"),
+                 Path("/usr/local/bin/claude")):
+        if cand.exists():
+            return str(cand)
+    return "claude"  # let the OS error be the message
+
+
+CLAUDE_BIN = _find_claude()
 AGENT_TIMEOUT_S = 15 * 60
 URL_RE = re.compile(r"https?://\S+")
 

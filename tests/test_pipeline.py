@@ -875,3 +875,20 @@ def test_login_reader_uses_the_credentials_file_off_mac(monkeypatch, tmp_path):
     assert "credentials.json" in claude_login.describe(blob)
     monkeypatch.setattr(claude_login, "CRED_FILE", tmp_path / "missing.json")
     assert claude_login.oauth_blob() == {}
+
+
+def test_claude_binary_is_found_outside_a_shell_path(monkeypatch, tmp_path):
+    """A systemd user unit's PATH lacks ~/.local/bin; the old fallback was a
+    Mac-only Homebrew path, so the server raised FileNotFoundError per note."""
+    import shutil as _sh
+    fake_home = tmp_path
+    (fake_home / ".local/bin").mkdir(parents=True)
+    exe = fake_home / ".local/bin/claude"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    monkeypatch.setattr(_sh, "which", lambda _n: None)
+    monkeypatch.setattr(bot.Path, "home", classmethod(lambda cls: fake_home))
+    monkeypatch.delenv("CLAUDE_BIN", raising=False)
+    assert bot._find_claude() == str(exe)
+    monkeypatch.setenv("CLAUDE_BIN", "/custom/claude")
+    assert bot._find_claude() == "/custom/claude"

@@ -6,6 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=__DIR__
+# A user unit's PATH omits ~/.local/bin, where the Claude CLI installs.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 ExecStart=__PYTHON__ __DIR__/bot.py
 # systemd is the watchdog on Linux — it restarts the bot on any exit.
 Restart=always
