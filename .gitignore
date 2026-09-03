@@ -30,3 +30,7 @@ ios/SavedToNotes.xcodeproj/
 ios/SavedToNotes/Sources/Secrets.swift
 ios/build/
 ios/DerivedData/
+# The vault — as a directory OR a symlink. 'vault/' only matched the directory
+# form, so a symlink at that path was committed and, on pull, replaced the
+# server's real vault with a link to a Mac path.
+vault

@@ -41,6 +41,7 @@ if ! git pull -q --rebase --autostash origin main 2>>"$LOG"; then
   git rebase --abort >/dev/null 2>&1
   exit 0
 fi
+log "pulled (HEAD $(git rev-parse --short HEAD))"
 if [ "${1:-push}" = push ] || [ -n "$(git log origin/main..HEAD --oneline 2>/dev/null)" ]; then
   git push -q origin main 2>>"$LOG" && log "pushed" || log "push failed — will retry"
 fi

@@ -901,3 +901,15 @@ def test_vault_sync_script_is_portable_to_macos():
     assert "mkdir \"$LOCK\"" in src
     import subprocess
     assert subprocess.run(["bash", "-n", "vault_sync.sh"], cwd=pathlib.Path(__file__).resolve().parent.parent).returncode == 0
+
+
+def test_the_vault_is_never_tracked_by_the_code_repo():
+    """'vault/' in .gitignore matched only a directory; a symlink at that path
+    was committed to the PUBLIC repo and, on pull, replaced the server's real
+    vault with a link to a Mac path. The bare name matches both forms."""
+    import subprocess
+    root = pathlib.Path(__file__).resolve().parent.parent
+    tracked = subprocess.run(["git", "ls-files", "vault"], cwd=root, capture_output=True, text=True).stdout
+    assert tracked.strip() == "", f"vault is tracked: {tracked!r}"
+    ignored = subprocess.run(["git", "check-ignore", "-q", "vault"], cwd=root).returncode
+    assert ignored == 0, "vault is not ignored by the code repo"
