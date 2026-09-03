@@ -892,3 +892,12 @@ def test_claude_binary_is_found_outside_a_shell_path(monkeypatch, tmp_path):
     assert bot._find_claude() == str(exe)
     monkeypatch.setenv("CLAUDE_BIN", "/custom/claude")
     assert bot._find_claude() == "/custom/claude"
+
+
+def test_vault_sync_script_is_portable_to_macos():
+    """flock(1) does not exist on macOS; the first Mac pull died on it."""
+    src = (pathlib.Path(__file__).resolve().parent.parent / "vault_sync.sh").read_text()
+    assert "flock" not in src.replace("# ", "").split("mkdir is atomic")[0] or "flock(1) does not exist" in src
+    assert "mkdir \"$LOCK\"" in src
+    import subprocess
+    assert subprocess.run(["bash", "-n", "vault_sync.sh"], cwd=pathlib.Path(__file__).resolve().parent.parent).returncode == 0
