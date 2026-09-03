@@ -432,6 +432,11 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
     # The agent has read everything it needs; keeping the media would only fill
     # the disk and risk a later reel picking up a stale file.
     await asyncio.to_thread(acquire.cleanup, media)
+    # Ship the note to the private vault repo so the reading machine gets it
+    # within minutes. Best effort by design: the note is already on disk, and
+    # a timer retries anything that didn't push.
+    if os.environ.get("VAULT_SYNC", "").strip() == "1":
+        asyncio.get_running_loop().run_in_executor(None, _vault_sync_push)
     if force:
         # redo = replace: drop older Notion row + vault note for this reel
         n = await asyncio.to_thread(notion.dedupe_by_source, url) if notion.enabled() else 0
@@ -999,6 +1004,14 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "")
 def _caption_heading(media: dict | None) -> str:
     """On X the caption is the post itself, not a caption under something."""
     return "Post text" if (media or {}).get("platform") == "twitter" else "Caption"
+
+
+def _vault_sync_push() -> None:
+    try:
+        subprocess.run([str(PROJECT_DIR / "vault_sync.sh"), "push"],
+                       capture_output=True, timeout=120, check=False)
+    except Exception as e:  # noqa: BLE001 — sync must never touch the note's outcome
+        log.warning("vault sync skipped: %s", e)
 
 
 def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str,

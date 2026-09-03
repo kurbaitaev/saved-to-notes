@@ -30,7 +30,8 @@ render() { sed -e "s|__DIR__|$HERE|g" -e "s|__PYTHON__|$PYTHON|g" "$1"; }
 
 for unit in saved-to-notes.service \
             saved-to-notes-watchdog.service saved-to-notes-watchdog.timer \
-            saved-to-notes-digest.service   saved-to-notes-digest.timer; do
+            saved-to-notes-digest.service   saved-to-notes-digest.timer \
+            saved-to-notes-vaultsync.service saved-to-notes-vaultsync.timer; do
   render "$HERE/deploy/$unit" > "$UNIT_DIR/$unit"
 done
 
@@ -38,6 +39,7 @@ systemctl --user daemon-reload
 systemctl --user enable --now saved-to-notes.service
 systemctl --user enable --now saved-to-notes-watchdog.timer
 systemctl --user enable --now saved-to-notes-digest.timer
+systemctl --user enable --now saved-to-notes-vaultsync.timer
 
 # Without linger the units stop the moment the SSH session ends.
 if ! loginctl show-user "$(id -un)" 2>/dev/null | grep -q "Linger=yes"; then
