@@ -20,7 +20,15 @@ log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
 [ -d "$VAULT/.git" ] || { log "vault is not a git repo yet — run the setup in docs/vault-sync.md"; exit 0; }
 cd "$VAULT" || exit 0
 # One sync at a time; a second caller just leaves (the timer will catch up).
-exec 9>"$VAULT/.git/sync.lock"; flock -n 9 || { log "another sync is running"; exit 0; }
+# mkdir is atomic on both Linux and macOS — flock(1) does not exist on macOS,
+# and the first Mac pull died on it while logging "another sync is running".
+LOCK="$VAULT/.git/sync.lock.d"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  # A lock older than 10 minutes belongs to a crashed run, not a live one.
+  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +10 2>/dev/null)" ]; then rmdir "$LOCK" 2>/dev/null && mkdir "$LOCK" 2>/dev/null || exit 0
+  else log "another sync is running"; exit 0; fi
+fi
+trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
 git add -A >/dev/null 2>&1
 if ! git diff --cached --quiet; then
