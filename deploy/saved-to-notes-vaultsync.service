@@ -1,0 +1,8 @@
+[Unit]
+Description=saved-to-notes vault push (safety net for the after-save push)
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DIR__
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=__DIR__/vault_sync.sh push

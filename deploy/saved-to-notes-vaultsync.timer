@@ -1,0 +1,9 @@
+[Unit]
+Description=Push the vault every 10 minutes if anything is unpushed
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=10min
+
+[Install]
+WantedBy=timers.target
