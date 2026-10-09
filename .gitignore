@@ -36,3 +36,12 @@ ios/DerivedData/
 vault
 # launchd plists moved out of ~/Library/LaunchAgents so login can't reload them
 launchd/disabled-on-this-mac/
+
+# Personal data must never enter this PUBLIC repo — the vault lives in its own
+# private repo. A vault backup and a pre-migration ledger were once committed
+# here by a blanket `git add -A`; these patterns close every shape of it.
+vault*/
+vault.*
+ledger.json*
+pending*.json
+*.backup*

@@ -983,3 +983,16 @@ def test_a_reader_machine_never_starts_a_second_bot(monkeypatch):
     assert not bot.bot_disabled_here()
     tpl = (pathlib.Path(__file__).resolve().parent.parent / "launchd/bot.plist.template").read_text()
     assert "SuccessfulExit" in tpl, "a clean RUN_BOT=0 exit must not be respawned by launchd"
+
+
+def test_no_personal_data_is_tracked_in_the_public_repo():
+    """A blanket `git add -A` once committed a full vault backup and a ledger
+    full of rendered notes to this public repo. Fail loudly if anything shaped
+    like personal data is tracked again."""
+    import subprocess
+    root = pathlib.Path(__file__).resolve().parent.parent
+    tracked = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True).stdout.split("\n")
+    bad = [f for f in tracked if f and (
+        f.startswith("vault") or f.startswith("ledger.json") or
+        (f.startswith("pending") and f.endswith(".json")) or ".backup" in f or f == ".env")]
+    assert not bad, f"personal data tracked in the public repo: {bad[:5]}"
