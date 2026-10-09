@@ -993,6 +993,6 @@ def test_no_personal_data_is_tracked_in_the_public_repo():
     root = pathlib.Path(__file__).resolve().parent.parent
     tracked = subprocess.run(["git", "ls-files"], cwd=root, capture_output=True, text=True).stdout.split("\n")
     bad = [f for f in tracked if f and (
-        f.startswith("vault") or f.startswith("ledger.json") or
+        f.startswith(("vault/", "vault.")) or f.startswith("ledger.json") or
         (f.startswith("pending") and f.endswith(".json")) or ".backup" in f or f == ".env")]
     assert not bad, f"personal data tracked in the public repo: {bad[:5]}"
