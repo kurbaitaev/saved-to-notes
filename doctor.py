@@ -97,7 +97,8 @@ def main() -> int:
     anthropic_key = bool(env("ANTHROPIC_API_KEY"))
     cli = bool(shutil.which("claude"))
     logged_in = False
-    if cli and not (openai_key or anthropic_key):
+    token_login = bool(claude_login.long_lived_token())
+    if cli and not (openai_key or anthropic_key or token_login):
         blob = claude_login.oauth_blob()
         # A refreshable session counts: access tokens roll over hourly on
         # their own, as long as the CLI keeps being used.
@@ -106,6 +107,10 @@ def main() -> int:
         backend = f"OpenAI ({env('OPENAI_MODEL') or 'gpt-5.6-terra'})"
     elif anthropic_key:
         backend = "Anthropic API key"
+    elif token_login:
+        left = claude_login.token_days_left()
+        backend = ("Claude long-lived token (setup-token" +
+                   (f", {left:.0f} days left)" if left is not None else ")"))
     elif logged_in:
         backend = claude_login.describe() + " — refreshes itself while in use"
     else:

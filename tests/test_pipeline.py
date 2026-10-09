@@ -996,3 +996,20 @@ def test_no_personal_data_is_tracked_in_the_public_repo():
         f.startswith(("vault/", "vault.")) or f.startswith("ledger.json") or
         (f.startswith("pending") and f.endswith(".json")) or ".backup" in f or f == ".env")]
     assert not bad, f"personal data tracked in the public repo: {bad[:5]}"
+
+
+def test_a_setup_token_counts_as_a_login(monkeypatch):
+    """The CLI honours CLAUDE_CODE_OAUTH_TOKEN ahead of the credentials file;
+    every check that only reads the file would call a working bot logged out."""
+    import datetime as _dt
+    import claude_login
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "sk-ant-oat-test")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(bot.agent_openai, "enabled", lambda: False)
+    monkeypatch.setattr(bot.claude_login, "oauth_blob", lambda: {})
+    assert bot._auth_looks_ok()
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN_SET_AT", "2026-10-09")
+    assert claude_login.token_days_left(_dt.date(2026, 10, 9)) == 365
+    assert claude_login.token_days_left(_dt.date(2027, 9, 30)) == 9
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN_SET_AT", "garbage")
+    assert claude_login.token_days_left() is None

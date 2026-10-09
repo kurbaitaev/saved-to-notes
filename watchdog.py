@@ -188,7 +188,12 @@ def main() -> None:
 
     # Refresh tokens can expire too — that is how the Mac's login died. Warn
     # a week ahead, once a day, instead of finding out from a dead queue.
-    days = claude_login.days_until_refresh_expiry()
+    left = claude_login.token_days_left()
+    if left is not None and left < 14 and time.strftime("%H") == "09":
+        alert(token, chat, f"⏳ The bot's 1-year Claude token expires in {left:.0f} day(s). "
+                           "On the server run:  stn-setup-token")
+    # A setup-token makes the refreshable login irrelevant to the bot.
+    days = None if claude_login.long_lived_token() else claude_login.days_until_refresh_expiry()
     if days is not None and days < 7 and time.strftime("%H") == "09":
         alert(token, chat, f"⏳ The bot's Claude login can't refresh itself in {days:.0f} day(s). "
                            "On the server run:  claude setup-token  (a 1-year token), or log in again.")

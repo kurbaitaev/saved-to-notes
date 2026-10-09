@@ -9,7 +9,9 @@ server both reported "no login" while `claude -p` was answering fine on a Max
 subscription. One reader, two platforms, no more disagreement.
 """
 
+import datetime as dt
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -69,3 +71,27 @@ def describe(blob: dict | None = None) -> str:
     where = "keychain" if IS_MAC else "~/.claude/.credentials.json"
     plan = b.get("subscriptionType") or "subscription"
     return f"Claude CLI login ({plan}, {where})"
+
+
+# --- long-lived token from `claude setup-token` --------------------------------
+# The CLI honours CLAUDE_CODE_OAUTH_TOKEN ahead of the credentials file. It does
+# not refresh and lasts a year, so nothing about it can be read from the token
+# itself; CLAUDE_CODE_OAUTH_TOKEN_SET_AT (YYYY-MM-DD) records when it was made.
+TOKEN_LIFETIME_DAYS = 365
+
+
+def long_lived_token() -> str:
+    return os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", "").strip()
+
+
+def token_days_left(today: dt.date | None = None) -> float | None:
+    """Days until the setup-token expires; None when there is no token or no
+    recorded creation date."""
+    if not long_lived_token():
+        return None
+    raw = os.environ.get("CLAUDE_CODE_OAUTH_TOKEN_SET_AT", "").strip()
+    try:
+        made = dt.date.fromisoformat(raw)
+    except ValueError:
+        return None
+    return TOKEN_LIFETIME_DAYS - ((today or dt.date.today()) - made).days

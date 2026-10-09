@@ -1241,7 +1241,8 @@ def _auth_looks_ok() -> bool:
     Used to read only the macOS keychain and return False everywhere else, so
     on the server a single transient auth failure would have held every link
     forever: the flag blocks recovery, and only a successful run clears it."""
-    if agent_openai.enabled() or os.environ.get("ANTHROPIC_API_KEY", "").strip():
+    if (agent_openai.enabled() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+            or claude_login.long_lived_token()):
         return True
     blob = claude_login.oauth_blob()
     return claude_login.session_valid(blob) or claude_login.can_refresh(blob)
