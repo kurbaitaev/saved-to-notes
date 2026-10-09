@@ -21,6 +21,11 @@ fi
 
 mkdir -p "$HERE/logs" "$AGENTS"
 
+if grep -qE '^RUN_BOT=0' "$HERE/.env" 2>/dev/null; then
+  echo "RUN_BOT=0: this Mac is a reader — installing only the vault pull job."
+  exec "$HERE/install-mac-reader.sh"
+fi
+
 render() {  # template -> plist
   sed -e "s|__LABEL__|$LABEL|g" \
       -e "s|__PYTHON__|$PYTHON|g" \

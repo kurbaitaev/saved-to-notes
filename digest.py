@@ -211,6 +211,9 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     load_env()
+    if os.environ.get("RUN_BOT", "1").strip() == "0" and not args.dry_run:
+        print("RUN_BOT=0 — reader machine; the digest is sent by the active instance.")
+        return 0
     today = dt.date.today()
     saved = saved_this_week(today)
     rows = notion_rows()

@@ -180,6 +180,18 @@ def main() -> None:
     load_env()
     token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat = os.environ.get("ALLOWED_USER_IDS", "").split(",")[0].strip()
+    if os.environ.get("RUN_BOT", "1").strip() == "0":
+        # A reader machine. Restarting "the missing bot" here is precisely how
+        # a second poller gets started.
+        wlog("RUN_BOT=0 — reader machine, nothing to watch")
+        return
+
+    # Refresh tokens can expire too — that is how the Mac's login died. Warn
+    # a week ahead, once a day, instead of finding out from a dead queue.
+    days = claude_login.days_until_refresh_expiry()
+    if days is not None and days < 7 and time.strftime("%H") == "09":
+        alert(token, chat, f"⏳ The bot's Claude login can't refresh itself in {days:.0f} day(s). "
+                           "On the server run:  claude setup-token  (a 1-year token), or log in again.")
 
     # The watchdog can only vouch for a project that still exists where it was
     # installed. If it has been moved out from under us, say so loudly — a

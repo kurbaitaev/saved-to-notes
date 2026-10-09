@@ -21,8 +21,9 @@
     </dict>
     <key>RunAtLoad</key>
     <true/>
+    <!-- Restart on a crash, not on a clean exit (RUN_BOT=0 exits cleanly). -->
     <key>KeepAlive</key>
-    <true/>
+    <dict><key>SuccessfulExit</key><false/></dict>
     <key>StandardOutPath</key>
     <string>__DIR__/logs/bot.out.log</string>
     <key>StandardErrorPath</key>

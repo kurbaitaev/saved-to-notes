@@ -33,6 +33,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 import acquire
 import agent_openai
+import claude_login
 import folders
 import ledger
 import notion
@@ -1235,19 +1236,15 @@ MAX_RESUME_ATTEMPTS = 3
 
 def _auth_looks_ok() -> bool:
     """Cheap check that the reasoning backend can authenticate, without burning
-    an agent run. Used to lift the auth-failure hold once you've logged back in."""
+    an agent run. Used to lift the auth-failure hold once you've logged back in.
+
+    Used to read only the macOS keychain and return False everywhere else, so
+    on the server a single transient auth failure would have held every link
+    forever: the flag blocks recovery, and only a successful run clears it."""
     if agent_openai.enabled() or os.environ.get("ANTHROPIC_API_KEY", "").strip():
         return True
-    if sys.platform != "darwin":
-        return False  # no keychain to consult; wait for a successful run
-    try:
-        r = subprocess.run(["security", "find-generic-password", "-s",
-                            "Claude Code-credentials", "-w"],
-                           capture_output=True, text=True, timeout=10)
-        exp = json.loads(r.stdout.strip()).get("claudeAiOauth", {}).get("expiresAt") or 0
-        return bool(exp) and exp / 1000 >= time.time()
-    except Exception:  # noqa: BLE001
-        return False
+    blob = claude_login.oauth_blob()
+    return claude_login.session_valid(blob) or claude_login.can_refresh(blob)
 
 
 LOG_MAX_BYTES = 20 * 1024 * 1024
@@ -1273,8 +1270,13 @@ def _trim_logs() -> None:
             log.warning("could not trim %s: %s", name, e)
 
 
-async def _heartbeat() -> None:
-    """Touch a file every minute so the watchdog can tell alive from stuck."""
+RETRY_EVERY_MIN = 30
+_drain_lock = asyncio.Lock()
+
+
+async def _heartbeat(bot=None) -> None:
+    """Touch a file every minute so the watchdog can tell alive from stuck,
+    trim logs hourly, and retry queued links every RETRY_EVERY_MIN minutes."""
     HEARTBEAT.parent.mkdir(exist_ok=True)
     ticks = 0
     while True:
@@ -1284,69 +1286,85 @@ async def _heartbeat() -> None:
             pass
         if ticks % 60 == 0:  # hourly
             _trim_logs()
+        if bot is not None and ticks and ticks % RETRY_EVERY_MIN == 0:
+            asyncio.create_task(_drain_pending(bot))
         ticks += 1
         await asyncio.sleep(60)
 
 
-async def _resume_pending(app) -> None:
-    """On startup, re-process any reels that were interrupted mid-flight."""
-    asyncio.create_task(_heartbeat())
-    pend = ledger.pending_all()
-    if not pend:
-        return
-    if AUTH_FAILED_FLAG.exists():
-        if _auth_looks_ok():
-            # Otherwise this deadlocks: the flag blocks recovery, but only a
-            # successful run clears the flag, and recovery is what would run.
-            AUTH_FAILED_FLAG.unlink(missing_ok=True)
-            log.info("auth looks restored — recovering %d held reel(s)", len(pend))
-        else:
-            # Retrying now would spend the 3 recovery attempts on certain
-            # failures and drop the reels for good.
-            log.warning("%d reel(s) pending but the login is still dead — "
-                        "holding them", len(pend))
-            return
+async def _drain_pending(bot) -> None:
+    """Retry every queued link that isn't being processed right now.
 
-    async def _go() -> None:
+    This used to run only at startup. That was fine on a laptop that restarts
+    daily; on a server that ran 36 days without a restart, seven links sat
+    queued the whole time while their failure message promised a retry."""
+    if _drain_lock.locked():
+        return
+    async with _drain_lock:
+        pend = ledger.pending_all()
+        if not pend:
+            return
+        if AUTH_FAILED_FLAG.exists():
+            if _auth_looks_ok():
+                # Otherwise this deadlocks: the flag blocks recovery, but only a
+                # successful run clears the flag, and recovery is what would run.
+                AUTH_FAILED_FLAG.unlink(missing_ok=True)
+                log.info("auth looks restored — recovering %d held reel(s)", len(pend))
+            else:
+                # Retrying now would spend the recovery attempts on certain
+                # failures and drop the reels for good.
+                log.warning("%d reel(s) pending but the login is still dead — "
+                            "holding them", len(pend))
+                return
         for url, rec in list(pend.items()):
             if AUTH_FAILED_FLAG.exists():
-                # Checked every iteration, not just up front: the first reel is
-                # often what reveals the login is dead, and without this the rest
-                # of the queue is spent on guaranteed failures.
+                # Checked every iteration: the first reel is often what reveals
+                # the login is dead, and the rest shouldn't be spent on it.
                 log.warning("login died mid-recovery — leaving the rest pending")
                 return
+            if url in _in_flight:
+                continue  # live right now; counting it as an attempt would be wrong
             chat_id = rec.get("chat_id")
             if not chat_id:
                 ledger.pending_remove(url)
                 continue
-            # A reel that keeps killing the bot would otherwise be retried on
-            # every startup forever, blocking real messages behind it.
             if (ledger.get(url) or {}).get("status") == "done":
                 ledger.pending_remove(url)   # finished, just never un-marked
                 continue
+            # A link that keeps failing would otherwise be retried forever,
+            # blocking real messages behind it.
             if ledger.pending_attempt(url) > MAX_RESUME_ATTEMPTS:
                 ledger.pending_remove(url)
                 log.warning("giving up on %s after %d attempts", url, MAX_RESUME_ATTEMPTS)
                 try:
-                    await app.bot.send_message(
-                        chat_id, f"⚠️ Couldn't recover this one after several tries: {url}"
-                    )
+                    await bot.send_message(
+                        chat_id, f"⚠️ Couldn't recover this one after several tries: {url}")
                 except Exception:  # noqa: BLE001
                     pass
                 continue
-            if (ledger.get(url) or {}).get("status") == "done":
-                ledger.pending_remove(url)   # finished, just never un-marked
-                continue
-            log.info("resuming interrupted reel %s", url)
+            log.info("retrying queued link %s", url)
             try:
-                await app.bot.send_message(chat_id, "↻ Recovering a link that got interrupted earlier…")
-                await process(app.bot, chat_id, url, force=True, user_note=rec.get("note", ""))
+                await bot.send_message(chat_id, "↻ Retrying a link that didn't finish earlier…")
+                await process(bot, chat_id, url, force=True, user_note=rec.get("note", ""))
             except Exception as e:  # noqa: BLE001
-                # Leave it pending: pending_attempt already caps this at
-                # MAX_RESUME_ATTEMPTS, which must stay the only give-up path.
-                log.warning("resume failed for %s: %s", url, e)
+                # Leave it pending: pending_attempt caps this at MAX_RESUME_ATTEMPTS,
+                # which must stay the only give-up path.
+                log.warning("retry failed for %s: %s", url, e)
 
-    asyncio.create_task(_go())  # run after polling starts, don't block startup
+
+async def _resume_pending(app) -> None:
+    """On startup: start the heartbeat (which also retries on a timer) and
+    drain whatever was queued before the restart."""
+    asyncio.create_task(_heartbeat(app.bot))
+    asyncio.create_task(_drain_pending(app.bot))  # after polling starts, don't block startup
+
+
+def bot_disabled_here() -> bool:
+    """RUN_BOT=0 marks a machine that only READS the vault while the bot runs
+    elsewhere. Telegram allows one polling listener per token; on Oct 1 a
+    laptop login quietly reloaded a second bot, and for a week every link was
+    a coin flip between a working server and a laptop whose login had died."""
+    return os.environ.get("RUN_BOT", "1").strip() == "0"
 
 
 def main() -> None:
@@ -1355,6 +1373,10 @@ def main() -> None:
         res = asyncio.run(run_pipeline(sys.argv[2], force=True))
         print(f"=== OUTCOME: {res.outcome} ===")
         print("=== RICH HTML ===\n" + (res.rich_md or "(none)") + "\n\n=== PLAIN FALLBACK ===\n" + res.html)
+        return
+    if bot_disabled_here():
+        # Clean exit: launchd's KeepAlive only restarts on a crash.
+        print("RUN_BOT=0 in .env — this machine is a reader; the bot runs elsewhere.")
         return
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     if not token:

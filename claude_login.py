@@ -43,9 +43,23 @@ def session_valid(blob: dict | None = None, now: float | None = None) -> bool:
     return bool(exp) and exp / 1000 >= (time.time() if now is None else now)
 
 
-def can_refresh(blob: dict | None = None) -> bool:
+def can_refresh(blob: dict | None = None, now: float | None = None) -> bool:
+    """A refresh token that has itself expired cannot refresh anything — that
+    is exactly how the Mac's login died ("could not be refreshed")."""
     b = oauth_blob() if blob is None else blob
-    return bool(b.get("refreshToken"))
+    if not b.get("refreshToken"):
+        return False
+    rexp = b.get("refreshTokenExpiresAt") or 0
+    return not rexp or rexp / 1000 >= (time.time() if now is None else now)
+
+
+def days_until_refresh_expiry(blob: dict | None = None, now: float | None = None) -> float | None:
+    """None when the login carries no refresh expiry to read."""
+    b = oauth_blob() if blob is None else blob
+    rexp = b.get("refreshTokenExpiresAt") or 0
+    if not rexp:
+        return None
+    return (rexp / 1000 - (time.time() if now is None else now)) / 86400
 
 
 def describe(blob: dict | None = None) -> str:

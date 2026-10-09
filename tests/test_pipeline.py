@@ -913,3 +913,73 @@ def test_the_vault_is_never_tracked_by_the_code_repo():
     assert tracked.strip() == "", f"vault is tracked: {tracked!r}"
     ignored = subprocess.run(["git", "check-ignore", "-q", "vault"], cwd=root).returncode
     assert ignored == 0, "vault is not ignored by the code repo"
+
+
+# --- single active instance + retries that actually happen ---------------
+# Oct 1-9: a laptop login reloaded a second bot, Telegram split every link
+# between a working server and a laptop with a dead login, and the server's
+# queued links waited 36 days for a restart that never came.
+
+def test_queued_links_are_retried_without_a_restart(monkeypatch):
+    import asyncio
+    sent, processed = [], []
+
+    class FakeBot:
+        async def send_message(self, chat_id, text):
+            sent.append(text)
+
+    async def fake_process(bot_, chat_id, url, force, user_note=""):
+        processed.append(url)
+
+    pend = {"https://a/": {"chat_id": 1}, "https://busy/": {"chat_id": 1}}
+    attempts = {}
+
+    def fake_attempt(u):
+        attempts[u] = attempts.get(u, 0) + 1
+        return attempts[u]
+
+    monkeypatch.setattr(bot.ledger, "pending_all", lambda: dict(pend))
+    monkeypatch.setattr(bot.ledger, "pending_attempt", fake_attempt)
+    monkeypatch.setattr(bot.ledger, "get", lambda u: None)
+    monkeypatch.setattr(bot, "process", fake_process)
+    monkeypatch.setattr(bot, "AUTH_FAILED_FLAG", pathlib.Path("/nonexistent/.auth_failed"))
+    bot._in_flight.add("https://busy/")
+    try:
+        asyncio.run(bot._drain_pending(FakeBot()))
+    finally:
+        bot._in_flight.discard("https://busy/")
+    assert processed == ["https://a/"]
+    # a link being processed live must not burn one of its retry attempts
+    assert "https://busy/" not in attempts
+
+
+def test_auth_gate_reads_the_linux_login_file(monkeypatch):
+    """It returned False on every non-Mac, so one transient auth failure on the
+    server would have held every link forever."""
+    import time as _t
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.setattr(bot.agent_openai, "enabled", lambda: False)
+    live = {"expiresAt": (_t.time() + 3600) * 1000}
+    monkeypatch.setattr(bot.claude_login, "oauth_blob", lambda: live)
+    assert bot._auth_looks_ok()
+    dead = {"expiresAt": 1, "refreshToken": "r", "refreshTokenExpiresAt": 1}
+    monkeypatch.setattr(bot.claude_login, "oauth_blob", lambda: dead)
+    assert not bot._auth_looks_ok()
+
+
+def test_an_expired_refresh_token_cannot_refresh():
+    import claude_login
+    now = 1_700_000_000.0
+    assert claude_login.can_refresh({"refreshToken": "r"}, now)
+    assert claude_login.can_refresh({"refreshToken": "r", "refreshTokenExpiresAt": (now + 86400) * 1000}, now)
+    assert not claude_login.can_refresh({"refreshToken": "r", "refreshTokenExpiresAt": (now - 1) * 1000}, now)
+    assert round(claude_login.days_until_refresh_expiry({"refreshTokenExpiresAt": (now + 3 * 86400) * 1000}, now)) == 3
+
+
+def test_a_reader_machine_never_starts_a_second_bot(monkeypatch):
+    monkeypatch.setenv("RUN_BOT", "0")
+    assert bot.bot_disabled_here()
+    monkeypatch.setenv("RUN_BOT", "1")
+    assert not bot.bot_disabled_here()
+    tpl = (pathlib.Path(__file__).resolve().parent.parent / "launchd/bot.plist.template").read_text()
+    assert "SuccessfulExit" in tpl, "a clean RUN_BOT=0 exit must not be respawned by launchd"
