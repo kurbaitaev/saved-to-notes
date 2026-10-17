@@ -1013,3 +1013,57 @@ def test_a_setup_token_counts_as_a_login(monkeypatch):
     assert claude_login.token_days_left(_dt.date(2027, 9, 30)) == 9
     monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN_SET_AT", "garbage")
     assert claude_login.token_days_left() is None
+
+
+# --- the Oct 17 reboot outage ---------------------------------------------
+# A reboot emptied /tmp, the unit's ReadWritePaths pointed at /tmp/saved-to-notes,
+# and the bot restart-looped on 226/NAMESPACE for 6.5 hours. The watchdog saw it
+# five times but only ever said "restart FAILED", never why.
+
+def test_the_bot_unit_starts_without_its_tmp_folder():
+    unit = (pathlib.Path(__file__).resolve().parent.parent / "deploy" / "saved-to-notes.service").read_text()
+    paths = [p for line in unit.splitlines() if line.startswith("ReadWritePaths=")
+             for p in line.partition("=")[2].split()]
+    assert paths, "the unit lost its ReadWritePaths line"
+    for p in paths:
+        if "/tmp" in p:
+            assert p.startswith("-"), f"{p} must be optional: a reboot empties /tmp"
+
+
+def test_a_failed_restart_alert_says_why(monkeypatch):
+    import subprocess as _sp
+    import watchdog
+    journal = "\n".join([
+        "saved-to-notes.service: Failed to set up mount namespacing: /tmp/saved-to-notes: No such file or directory",
+        "saved-to-notes.service: Failed at step NAMESPACE spawning /home/m/.venv/bin/python: No such file or directory",
+        "saved-to-notes.service: Main process exited, code=exited, status=226/NAMESPACE",
+        "saved-to-notes.service: Failed with result 'exit-code'.",
+    ])
+
+    def fake_run(cmd, **_kw):
+        out = "SubState=auto-restart\nNRestarts=121\n" if cmd[0] == "systemctl" else journal
+        return _sp.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+    monkeypatch.setattr(watchdog, "IS_MAC", False)
+    monkeypatch.setattr(watchdog.subprocess, "run", fake_run)
+    why = watchdog.service_failure()
+    assert "auto-restart, 121 restarts" in why
+    assert "NAMESPACE spawning" in why          # the cause, not "Failed with result"
+    monkeypatch.setattr(watchdog, "IS_MAC", True)
+    assert watchdog.service_failure() == ""
+
+
+def test_ghost_detection_reads_full_command_lines_on_linux(monkeypatch):
+    """procps' pgrep -l prints only "python" on Linux, so no ghost was ever found."""
+    import subprocess as _sp
+    import watchdog
+    seen = {}
+
+    def fake_run(cmd, **_kw):
+        seen["cmd"] = cmd
+        return _sp.CompletedProcess(cmd, 0, stdout="42 /venv/bin/python /gone/saved-to-notes/bot.py\n", stderr="")
+
+    monkeypatch.setattr(watchdog, "IS_MAC", False)
+    monkeypatch.setattr(watchdog.subprocess, "run", fake_run)
+    assert watchdog.ghost_bot_paths() == ["/gone/saved-to-notes/bot.py"]
+    assert "-fa" in seen["cmd"]

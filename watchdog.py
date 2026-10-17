@@ -25,6 +25,8 @@ LOG = PROJ / "logs" / "bot.err.log"
 HEARTBEAT = PROJ / "logs" / "heartbeat"  # bot touches this every 60s while polling
 WLOG = PROJ / "logs" / "watchdog.log"
 STALE_SECONDS = 600  # >10 min without a heartbeat = stuck
+SERVICE = "saved-to-notes.service"
+IS_MAC = sys.platform == "darwin"
 
 
 def load_env() -> None:
@@ -51,7 +53,11 @@ def ghost_bot_paths() -> list[str]:
     watchdog — itself the stale copy — noticed nothing. A process is only
     healthy if the file it was started from is still there.
     """
-    r = subprocess.run(["pgrep", "-fl", "saved-to-notes/bot.py"],
+    # Linux procps prints only the process name for -l ("python"), so the
+    # check never found a script there; -a is its full command line. On macOS
+    # -l is the full line and -a means something else.
+    flag = "-fl" if IS_MAC else "-fa"
+    r = subprocess.run(["pgrep", flag, "saved-to-notes/bot.py"],
                        capture_output=True, text=True)
     ghosts = []
     for line in r.stdout.splitlines():
@@ -70,27 +76,61 @@ def telegram_ok(token: str) -> bool:
         return False
 
 
-def alert(token: str, chat: str, text: str) -> None:
+def alert(token: str, chat: str, text: str) -> bool:
+    """Send a Telegram message; True if Telegram accepted it."""
     if not (token and chat):
-        return
+        return False
     try:
         data = urllib.parse.urlencode({"chat_id": chat, "text": text}).encode()
-        urllib.request.urlopen(
+        with urllib.request.urlopen(
             urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=data),
             timeout=15,
-        )
+        ) as r:
+            return json.load(r).get("ok", False)
     except Exception:  # noqa: BLE001
-        pass
+        return False
 
 
-IS_MAC = sys.platform == "darwin"
+# journal lines that say *that* the unit died, not *why*
+_GENERIC_JOURNAL = ("Main process exited", "Failed with result", "Scheduled restart",
+                    "Started ", "Stopped ", "Stopping ", "Consumed ")
+
+
+def service_failure() -> str:
+    """One line on why systemd can't keep the bot up ("" on macOS or if unknown).
+
+    After the Oct 17 reboot the unit restart-looped on a missing ReadWritePaths
+    folder for 6.5 hours; this watchdog said only "restart FAILED" five times
+    while the reason sat in the journal.
+    """
+    if IS_MAC:
+        return ""
+    try:
+        show = subprocess.run(
+            ["systemctl", "--user", "show", SERVICE, "-p", "SubState", "-p", "NRestarts"],
+            capture_output=True, text=True, timeout=15).stdout
+        log = subprocess.run(
+            ["journalctl", "--user", "-u", SERVICE, "--since", "-2h", "-n", "50",
+             "--no-pager", "-o", "cat", "-p", "warning"],
+            capture_output=True, text=True, timeout=15).stdout
+    except Exception:  # noqa: BLE001
+        return ""
+    props = dict(line.partition("=")[::2] for line in show.splitlines() if "=" in line)
+    reasons = [line.strip() for line in log.splitlines()
+               if line.strip() and not any(g in line for g in _GENERIC_JOURNAL)]
+    parts = []
+    if props.get("SubState"):
+        parts.append(f"systemd: {props['SubState']}, {props.get('NRestarts', '?')} restarts")
+    if reasons:
+        parts.append(reasons[-1].removeprefix(f"{SERVICE}: ")[:300])
+    return "\n".join(parts)
 
 
 def restart() -> None:
     if IS_MAC:
         cmd = ["launchctl", "kickstart", "-k", f"gui/{os.getuid()}/{LABEL}"]
     else:  # systemd handles restarts itself, but kick it if we're called anyway
-        cmd = ["systemctl", "--user", "restart", "saved-to-notes.service"]
+        cmd = ["systemctl", "--user", "restart", SERVICE]
     subprocess.run(cmd, capture_output=True, text=True, check=False)
 
 
@@ -231,10 +271,13 @@ def main() -> None:
         restart()
         time.sleep(6)
         ok = bot_running()
-        wlog(f"DOWN -> restarted, now running={ok}")
-        if online:
-            alert(token, chat, "⚠️ The reel bot was down — restarted it. ✅ Back up."
-                  if ok else "🚨 The reel bot is down and the restart FAILED — needs a look.")
+        why = "" if ok else service_failure()
+        sent = online and alert(
+            token, chat, "⚠️ The reel bot was down — restarted it. ✅ Back up." if ok
+            else "🚨 The reel bot is down and the restart FAILED — needs a look."
+                 + (f"\n\n{why}" if why else ""))
+        wlog(f"DOWN -> restarted, now running={ok}, alerted={sent}"
+             + (f" | {why.replace(chr(10), ' | ')}" if why else ""))
     elif stale and online:
         # process alive but not polling, while the internet IS up → stuck
         restart()
