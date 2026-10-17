@@ -91,9 +91,10 @@ def alert(token: str, chat: str, text: str) -> bool:
         return False
 
 
-# journal lines that say *that* the unit died, not *why*
+# journal lines that say *that* the unit died, not *why*. "Failed at step"
+# blames the binary ("…/python: No such file") when the cause is the line before.
 _GENERIC_JOURNAL = ("Main process exited", "Failed with result", "Scheduled restart",
-                    "Started ", "Stopped ", "Stopping ", "Consumed ")
+                    "Failed at step", "Started ", "Stopped ", "Stopping ", "Consumed ")
 
 
 def service_failure() -> str:

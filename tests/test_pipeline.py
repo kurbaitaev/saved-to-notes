@@ -1048,7 +1048,8 @@ def test_a_failed_restart_alert_says_why(monkeypatch):
     monkeypatch.setattr(watchdog.subprocess, "run", fake_run)
     why = watchdog.service_failure()
     assert "auto-restart, 121 restarts" in why
-    assert "NAMESPACE spawning" in why          # the cause, not "Failed with result"
+    assert "namespacing: /tmp/saved-to-notes: No such file" in why  # the cause
+    assert "python" not in why                  # not the misleading "Failed at step" line
     monkeypatch.setattr(watchdog, "IS_MAC", True)
     assert watchdog.service_failure() == ""
 
