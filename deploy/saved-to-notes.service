@@ -15,11 +15,13 @@ RestartSec=10
 StandardOutput=append:__DIR__/logs/bot.out.log
 StandardError=append:__DIR__/logs/bot.err.log
 # Small hardening: the bot only needs its own directory and /tmp.
+# The leading - lets the unit start when /tmp/saved-to-notes is gone (a reboot
+# empties /tmp); acquire.py recreates it, and /tmp stays writable anyway.
 NoNewPrivileges=true
 PrivateTmp=false
 ProtectSystem=full
 ProtectHome=read-only
-ReadWritePaths=__DIR__ /tmp/saved-to-notes
+ReadWritePaths=__DIR__ -/tmp/saved-to-notes
 
 [Install]
 WantedBy=default.target
