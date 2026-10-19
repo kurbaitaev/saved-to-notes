@@ -57,7 +57,7 @@ struct MoveView: View {
     @ViewBuilder private func creators(_ all: [Save]) -> some View {
         let groups = Dictionary(grouping: all) { $0.author.isEmpty ? "Unknown creator" : $0.author }
             .sorted { $0.value.count == $1.value.count ? $0.key < $1.key : $0.value.count > $1.value.count }
-        ForEach(groups.filter { $0.value.count > 1 }, id: \.key) { creator, saves in
+        ForEach(groups.filter { isSet($0.value) }, id: \.key) { creator, saves in
             Card {
                 HStack(spacing: 10) {
                     Text(initials(creator))
@@ -68,12 +68,13 @@ struct MoveView: View {
                         Text(summary(saves)).font(.system(size: 13)).foregroundStyle(Theme.mute)
                     }
                 }
-                // A collage: every move from this creator, at its true shape.
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 4), spacing: 8) {
-                    ForEach(Array(saves.enumerated()), id: \.element.id) { i, s in
-                        NavigationLink(value: s) {
+                // A collage: every move from this creator, each looping on its own.
+                let tiles = saves.flatMap { s in s.moves.isEmpty ? [(s, s.cover, s.name)] : s.moves.map { (s, Optional($0.clip), $0.name) } }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 8) {
+                    ForEach(Array(tiles.enumerated()), id: \.offset) { i, t in
+                        NavigationLink(value: t.0) {
                             VStack(alignment: .leading, spacing: 4) {
-                                ClipTile(save: s, radius: 10)
+                                ClipTile(clip: t.1, radius: 10)
                                     .overlay(alignment: .topLeading) {
                                         Text("\(i + 1)").font(.system(size: 11, weight: .bold))
                                             .foregroundStyle(i == 0 ? Theme.ground : Theme.ink)
@@ -81,7 +82,7 @@ struct MoveView: View {
                                             .background(Circle().fill(i == 0 ? Theme.signal : Theme.line))
                                             .padding(5)
                                     }
-                                Text(s.name).font(.system(size: 11)).foregroundStyle(Theme.soft).lineLimit(2)
+                                Text(t.2).font(.system(size: 11)).foregroundStyle(Theme.soft).lineLimit(2)
                             }
                         }
                         .buttonStyle(.plain)
@@ -91,7 +92,7 @@ struct MoveView: View {
             }
         }
         // One workout from a creator: a compact row, not a mostly-empty collage.
-        let singles = groups.filter { $0.value.count == 1 }
+        let singles = groups.filter { !isSet($0.value) }
         if !singles.isEmpty {
             VStack(spacing: 0) {
                 ForEach(singles, id: \.key) { creator, saves in
@@ -122,13 +123,18 @@ struct MoveView: View {
         }
     }
 
+    /// Worth a collage: several workouts, or one reel split into several moves.
+    private func isSet(_ saves: [Save]) -> Bool {
+        saves.count > 1 || saves.reduce(0) { $0 + $1.moves.count } > 1
+    }
+
     private func initials(_ name: String) -> String {
         String(name.split(separator: " ").prefix(2).compactMap(\.first)).uppercased().ifEmpty("?")
     }
 
     private func summary(_ saves: [Save]) -> String {
         let minutes = saves.compactMap(\.details.minutes).reduce(0, +)
-        let moves = saves.reduce(0) { $0 + ($1.details.moves?.count ?? 0) }
+        let moves = saves.reduce(0) { $0 + $1.steps.count }
         return [saves.count == 1 ? "1 workout" : "\(saves.count) workouts",
                 moves > 0 ? "\(moves) moves" : nil,
                 minutes > 0 ? "\(minutes) min" : nil].compactMap { $0 }.joined(separator: " · ")
@@ -166,7 +172,7 @@ private struct Tile: View {
 
     private var meta: String {
         let d = save.details
-        return [d.bodyArea?.capitalized, d.moves.map { "\($0.count) moves" }, d.minutes.map { "\($0) min" }]
+        return [d.bodyArea?.capitalized, save.steps.isEmpty ? nil : "\(save.steps.count) moves", d.minutes.map { "\($0) min" }]
             .compactMap { $0 }.joined(separator: " · ")
     }
 }
@@ -180,13 +186,13 @@ struct RoutinePlayer: View {
     @State private var step = 0
     @State private var started = Date()
 
-    private struct Step { let save: Save; let move: Exercise?; let index: Int; let total: Int; let workout: Int }
+    private struct Item { let save: Save; let step: Step?; let index: Int; let total: Int; let workout: Int }
 
-    private var steps: [Step] {
-        saves.enumerated().flatMap { w, s -> [Step] in
-            let moves = s.details.moves ?? []
-            if moves.isEmpty { return [Step(save: s, move: nil, index: 0, total: 1, workout: w)] }
-            return moves.enumerated().map { Step(save: s, move: $1, index: $0, total: moves.count, workout: w) }
+    private var steps: [Item] {
+        saves.enumerated().flatMap { w, s -> [Item] in
+            let st = s.steps
+            if st.isEmpty { return [Item(save: s, step: nil, index: 0, total: 1, workout: w)] }
+            return st.enumerated().map { Item(save: s, step: $1, index: $0, total: st.count, workout: w) }
         }
     }
 
@@ -214,21 +220,22 @@ struct RoutinePlayer: View {
                         }
                         .accessibilityLabel("Close routine")
                     }
-                    LoopView(save: s.save)
+                    // The move's own clip when the reel was split, else the whole reel.
+                    LoopView(clip: s.step?.clip ?? s.save.cover)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: 22))
-                        .id(s.save.id)
+                        .id(s.step?.clip?.key ?? s.save.id)
                     VStack(alignment: .leading, spacing: 4) {
-                        Eyebrow(text: "Workout \(s.workout + 1) of \(saves.count)" + (s.move == nil ? "" : " · move \(s.index + 1) of \(s.total)"),
+                        Eyebrow(text: "Workout \(s.workout + 1) of \(saves.count)" + (s.step == nil ? "" : " · move \(s.index + 1) of \(s.total)"),
                                 color: Theme.signal)
                         HStack(alignment: .firstTextBaseline) {
-                            Text(s.move?.name ?? s.save.name).font(.system(size: 26, weight: .heavy)).foregroundStyle(Theme.ink)
+                            Text(s.step?.name ?? s.save.name).font(.system(size: 26, weight: .heavy)).foregroundStyle(Theme.ink)
                             Spacer(minLength: 8)
-                            if let dose = s.move?.dose {
+                            if let dose = s.step?.dose {
                                 Text(dose).font(Theme.mono(15, .medium)).foregroundStyle(Theme.ink).multilineTextAlignment(.trailing)
                             }
                         }
-                        if let cue = s.move?.cues ?? s.save.details.why {
+                        if let cue = s.step?.cues ?? (s.step == nil ? s.save.details.why : nil) {
                             Text(cue).font(.system(size: 15)).foregroundStyle(Theme.soft).lineLimit(3)
                         }
                     }
@@ -255,23 +262,25 @@ struct RoutinePlayer: View {
 }
 
 struct MovesList: View {
-    let moves: [Exercise]
+    let steps: [Step]
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(moves.enumerated()), id: \.offset) { i, m in
-                HStack(alignment: .firstTextBaseline, spacing: 14) {
-                    Text("\(i + 1)").font(Theme.mono(13, .medium)).foregroundStyle(Theme.signal).frame(width: 16)
+            ForEach(Array(steps.enumerated()), id: \.offset) { i, m in
+                HStack(alignment: .top, spacing: 12) {
+                    if let clip = m.clip {
+                        // Each exercise loops on its own — the "gif per move".
+                        ClipTile(clip: clip, radius: 8).frame(width: 54)
+                    } else {
+                        Text("\(i + 1)").font(Theme.mono(13, .medium)).foregroundStyle(Theme.signal).frame(width: 16)
+                    }
                     VStack(alignment: .leading, spacing: 3) {
                         Text(m.name).font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.ink)
                         if let c = m.cues { Text(c).font(.system(size: 14)).foregroundStyle(Theme.mute) }
+                        if let d = m.dose { Text(d).font(Theme.mono(12, .medium)).foregroundStyle(Theme.signal) }
                     }
-                    Spacer(minLength: 8)
-                    if let d = m.dose {
-                        Text(d).font(Theme.mono(12, .medium)).foregroundStyle(Theme.ink).multilineTextAlignment(.trailing)
-                            .frame(maxWidth: 110, alignment: .trailing)
-                    }
+                    Spacer(minLength: 0)
                 }
-                .padding(.vertical, 12)
+                .padding(.vertical, 10)
                 .overlay(alignment: .bottom) { Rectangle().fill(Theme.hair).frame(height: 1) }
             }
         }

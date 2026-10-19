@@ -19,7 +19,7 @@ final class Store: ObservableObject {
     /// and cached so each place is looked up once.
     @Published var pins: [String: CLLocationCoordinate2D] = [:]
 
-    private let client = NotionClient(token: Secrets.notionToken, databaseID: Secrets.notionDatabaseID)
+    private let client = APIClient.shared
     private let local = LocalState()
 
     func of(_ kind: Kind) -> [Save] { saves.filter { $0.kind == kind } }
@@ -31,12 +31,12 @@ final class Store: ObservableObject {
         loading = false
         pins = local.pins
         await locatePlaces()
-        // Pre-fetch loops so the morning routine plays offline and instantly.
-        for s in of(.move) { if let u = s.clipURL { _ = try? await ClipCache.shared.file(for: s.id, remote: u) } }
-    }
-
-    func steps(for save: Save) async -> [String] {
-        (try? await client.steps(pageID: save.id)) ?? []
+        // Pre-fetch every loop so the morning routine plays offline and instantly.
+        for s in of(.move) {
+            for c in ([s.loop].compactMap { $0 } + s.moves.map(\.clip)) {
+                _ = try? await ClipCache.shared.file(for: c)
+            }
+        }
     }
 
     // MARK: - Things to buy: ticked off on this phone
@@ -130,10 +130,11 @@ actor ClipCache {
         return FileManager.default.fileExists(atPath: f.path) ? f : nil
     }
 
-    func file(for id: String, remote: URL) async throws -> URL {
-        if let f = cached(id) { return f }
-        let (tmp, _) = try await URLSession.shared.download(from: remote)
-        let f = dir.appendingPathComponent("\(id).mp4")
+    func file(for clip: Clip) async throws -> URL {
+        if let f = cached(clip.key) { return f }
+        let (tmp, resp) = try await URLSession.shared.download(for: APIClient.shared.clipRequest(clip.url))
+        guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw APIError.http((resp as? HTTPURLResponse)?.statusCode ?? 0) }
+        let f = dir.appendingPathComponent("\(clip.key).mp4")
         try? FileManager.default.removeItem(at: f)
         try FileManager.default.moveItem(at: tmp, to: f)
         return f

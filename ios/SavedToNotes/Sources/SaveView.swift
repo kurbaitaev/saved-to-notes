@@ -19,7 +19,7 @@ struct SaveView: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
                     HStack(alignment: .top, spacing: 14) {
-                        if save.kind == .move || save.clipURL != nil {
+                        if save.kind == .move || save.cover != nil {
                             ClipTile(save: save, radius: 18).frame(width: 150)
                         }
                         VStack(alignment: .leading, spacing: 10) {
@@ -43,7 +43,7 @@ struct SaveView: View {
         }
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(Theme.ground, for: .navigationBar)
-        .task { if save.kind == .cook { steps = await store.steps(for: save) } }
+        .task { steps = save.details.steps ?? [] }
         .sheet(isPresented: $addingEvent) { EventEditor(save: save).ignoresSafeArea() }
         .fullScreenCover(isPresented: $playing) { RoutinePlayer(saves: [save]) }
         .onAppear { if save.kind == .cook { UIApplication.shared.isIdleTimerDisabled = true } }
@@ -93,7 +93,7 @@ struct SaveView: View {
         let d = save.details
         switch save.kind {
         case .move:
-            if let m = d.moves, !m.isEmpty { section("Moves"); MovesList(moves: m) }
+            if !save.steps.isEmpty { section("Moves · \(save.steps.count)"); MovesList(steps: save.steps) }
         case .cook:
             if let ing = d.ingredients, !ing.isEmpty {
                 section("Ingredients")

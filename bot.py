@@ -1127,9 +1127,11 @@ def _sync_app(obj: dict, media: dict, url: str, date_iso: str) -> str:
     of a real-life category is removed from the app."""
     author = (obj.get("author") or "").strip()
     author = author if notion._ok(author) else (media.get("author") or "")
+    det = dict(obj.get("details") or {})
+    if obj.get("folder") == folders.COOK and obj.get("steps"):
+        det["steps"] = obj["steps"]  # cook mode needs the method, not just ingredients
     sid = appdb.upsert(url, obj.get("folder"), str(obj.get("title") or ""), author,
-                       str(obj.get("description") or obj.get("summary") or ""),
-                       obj.get("details") or {}, date_iso)
+                       str(obj.get("description") or obj.get("summary") or ""), det, date_iso)
     if not sid or obj.get("folder") != folders.MOVE:
         return ""
     try:

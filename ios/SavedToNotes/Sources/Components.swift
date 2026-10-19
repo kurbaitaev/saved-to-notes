@@ -8,10 +8,20 @@ import UIKit
 /// following along without touching anything. Muted so a grid of them, or a
 /// routine at 7am, never makes a sound.
 struct LoopView: View {
-    let save: Save
+    let clip: Clip?
+    var symbol: String = Kind.move.symbol
     /// Aspect-fit by default: a preview must show the whole frame, never a crop.
     var gravity: AVLayerVideoGravity = .resizeAspect
     @State private var file: URL?
+
+    init(clip: Clip?, symbol: String = Kind.move.symbol, gravity: AVLayerVideoGravity = .resizeAspect) {
+        self.clip = clip; self.symbol = symbol; self.gravity = gravity
+    }
+
+    /// A save's tile: its whole loop, else its first move.
+    init(save: Save, gravity: AVLayerVideoGravity = .resizeAspect) {
+        self.init(clip: save.cover, symbol: save.kind.symbol, gravity: gravity)
+    }
 
     var body: some View {
         ZStack {
@@ -19,14 +29,16 @@ struct LoopView: View {
             if let file {
                 LoopLayer(url: file, gravity: gravity)
             } else {
-                Image(systemName: save.kind.symbol)
+                Image(systemName: symbol)
                     .font(.system(size: 22, weight: .light))
                     .foregroundStyle(Theme.mute)
             }
         }
-        .task(id: save.id) {
-            if let f = await ClipCache.shared.cached(save.id) { file = f; return }
-            if let u = save.clipURL { file = try? await ClipCache.shared.file(for: save.id, remote: u) }
+        .task(id: clip?.key) {
+            file = nil
+            guard let clip else { return }
+            if let f = await ClipCache.shared.cached(clip.key) { file = f; return }
+            file = try? await ClipCache.shared.file(for: clip)
         }
     }
 }
@@ -112,10 +124,12 @@ struct PrimaryButton: View {
 
 /// A clip at its true 9:16 shape, so nothing is cropped at any size.
 struct ClipTile: View {
-    let save: Save
+    let clip: Clip?
     var radius: CGFloat = 16
+    init(save: Save, radius: CGFloat = 16) { clip = save.cover; self.radius = radius }
+    init(clip: Clip?, radius: CGFloat = 16) { self.clip = clip; self.radius = radius }
     var body: some View {
-        LoopView(save: save)
+        LoopView(clip: clip)
             .aspectRatio(9 / 16, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: radius))
     }
