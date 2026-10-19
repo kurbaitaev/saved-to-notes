@@ -92,13 +92,19 @@ class Handler(BaseHTTPRequestHandler):
             n = min(int(self.headers.get("Content-Length", "0")), 8_000)
             sys.stderr.write(f"  share report: {self.rfile.read(n).decode('utf-8', 'replace')[:2000]}\n")
             return self._json(204, {})
+        n = min(int(self.headers.get("Content-Length", "0")), 64_000)
+        raw = self.rfile.read(n).decode("utf-8", "replace")
         try:
-            n = min(int(self.headers.get("Content-Length", "0")), 64_000)
-            d = json.loads(self.rfile.read(n) or b"{}")
+            d = json.loads(raw or "{}")
+            d = d if isinstance(d, dict) else {"url": str(d)}
         except ValueError:
-            return self._json(400, {"error": "body must be JSON"})
-        # Shared text often wraps the link in a caption — pull the first URL out.
-        m = re.search(r"https?://[^\s\"'<>]+", str(d.get("url") or ""))
+            # A shortcut splices clipboard text straight into its JSON, so a
+            # caption with quotes or newlines breaks it — search the raw text.
+            d = {"url": raw}
+        # The shared item first; the clipboard ("clip") only when the sharing
+        # app passed nothing — Instagram hands shortcuts an empty input.
+        link = re.compile(r"https?://[^\s\"'<>\\]+")
+        m = link.search(str(d.get("url") or "")) or link.search(str(d.get("clip") or ""))
         if not m:
             # What arrived instead tells us how the sharing app packs its link.
             sys.stderr.write(f"  no link in: {json.dumps(d, ensure_ascii=False)[:600]}\n")

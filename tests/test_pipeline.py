@@ -1256,3 +1256,34 @@ def test_api_requires_the_token_and_queues_shared_links(tmp_path):
         finally:
             srv.shutdown()
             os.environ.pop("APP_TOKEN", None)
+
+
+def test_api_falls_back_to_the_clipboard_and_survives_broken_json(tmp_path):
+    """Instagram gives shortcuts an empty input; the shortcut then sends the
+    clipboard, spliced raw into its JSON — quotes in a caption must not lose
+    the link."""
+    import http.client
+    import os
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    import api
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        os.environ["APP_TOKEN"] = "t"
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), api.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            def post(body):
+                c = http.client.HTTPConnection("127.0.0.1", srv.server_port, timeout=5)
+                c.request("POST", "/v1/save", body=body.encode(), headers={"Authorization": "Bearer t"})
+                return c.getresponse().status
+            assert post('{"url": "", "clip": "https://www.instagram.com/reel/C/?igsh=x"}') == 202
+            assert appdb.take_inbox()[0][0] == "https://www.instagram.com/reel/C/?igsh=x"
+            assert post('{"url": "", "clip": "he said "wow"\nhttps://www.instagram.com/reel/D/"}') == 202
+            assert appdb.take_inbox()[0][0] == "https://www.instagram.com/reel/D/"
+            assert post('{"url": "", "clip": "nothing here"}') == 400
+        finally:
+            srv.shutdown()
+            os.environ.pop("APP_TOKEN", None)

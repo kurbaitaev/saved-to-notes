@@ -47,18 +47,25 @@ def _dict(pairs: dict) -> dict:
 
 
 def build(api_base: str, token: str) -> dict:
-    body, sent = (str(uuid.uuid4()).upper() for _ in range(2))
+    clip, body, sent = (str(uuid.uuid4()).upper() for _ in range(3))
     # The request body, with the shared link spliced in where OBJ sits. The
     # server pulls the first http(s) link out of whatever text arrives.
-    template = json.dumps({"url": OBJ}, ensure_ascii=False)
+    # Two slots: what was shared, and the clipboard as the fallback — Instagram
+    # hands shortcuts an empty input, so there "Copy link" then run this.
+    template = json.dumps({"url": OBJ, "clip": OBJ}, ensure_ascii=False)
     # attachmentsByRange counts UTF-16 code units, like NSString.
-    pos = len(template[:template.index(OBJ)].encode("utf-16-le")) // 2
+    first = template.index(OBJ)
+    pos = len(template[:first].encode("utf-16-le")) // 2
+    pos2 = len(template[:template.index(OBJ, first + 1)].encode("utf-16-le")) // 2
     actions = [
+        {"WFWorkflowActionIdentifier": "is.workflow.actions.getclipboard",
+         "WFWorkflowActionParameters": {"UUID": clip}},
         {"WFWorkflowActionIdentifier": "is.workflow.actions.gettext",
          "WFWorkflowActionParameters": {"UUID": body, "WFTextActionText": _text(
              # The whole share, unfiltered: Instagram's item defeated "Get URLs
              # from Input", so the server finds the link in whatever arrives.
-             template, {f"{{{pos}, 1}}": {"Type": "ExtensionInput"}})}},
+             template, {f"{{{pos}, 1}}": {"Type": "ExtensionInput"},
+                        f"{{{pos2}, 1}}": _out(clip, "Clipboard")})}},
         {"WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
          "WFWorkflowActionParameters": {
              "UUID": sent,
