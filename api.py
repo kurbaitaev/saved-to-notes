@@ -20,6 +20,7 @@ import os
 import pathlib
 import re
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PROJ = pathlib.Path(__file__).resolve().parent
@@ -45,7 +46,9 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "Afterscroll/1"
 
     def log_message(self, fmt, *args):  # one line per request, no headers or tokens
-        sys.stderr.write(f"{self.command} {self.path.split('?')[0]}\n")
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        ua = self.headers.get("User-Agent", "")[:40]
+        sys.stderr.write(f"{stamp} {self.command} {self.path.split('?')[0]} {ua}\n")
 
     def _json(self, code: int, obj) -> None:
         body = json.dumps(obj, ensure_ascii=False).encode()
@@ -91,6 +94,7 @@ class Handler(BaseHTTPRequestHandler):
         if not m:
             return self._json(400, {"error": "no link in 'url'"})
         appdb.enqueue(m.group(0), str(d.get("note") or "")[:500])
+        sys.stderr.write(f"  queued {m.group(0)[:120]}\n")
         self._json(202, {"queued": m.group(0)})
 
     def _file(self, p: pathlib.Path) -> None:
