@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
-"""Build the "Afterscroll" iOS shortcut: Share → Afterscroll from Instagram (or
-any app) drops the link into the Notion inbox, where the bot picks it up within
-a minute (notion.inbox_take).
+"""Build the "Save to Afterscroll" iOS shortcut: Share → Save to Afterscroll from
+Instagram (or any app) posts the link to the server's /v1/save, and the bot
+picks it up within a minute. The app's own share button does the same; this
+is the fallback for share sheets that hide app extensions.
 
-    python3 tools/make_shortcut.py      # writes ios/build/Afterscroll.shortcut (signed)
+    python3 tools/make_shortcut.py      # writes "ios/build/Save to Afterscroll.shortcut" (signed)
 
-The Notion token and database id are read from .env and baked into the file,
+The server address and APP_TOKEN are read from .env and baked into the file,
 so the output goes to ios/build/ (gitignored) and must never be committed or
-shared: anyone holding the file can write to the database.
+shared: anyone holding the file can queue links on the server.
 
 Signed with macOS's own `shortcuts sign`, so the phone can import it.
 """
@@ -45,16 +46,11 @@ def _dict(pairs: dict) -> dict:
         "WFSerializationType": "WFDictionaryFieldValue"}
 
 
-def build(token: str, db: str) -> dict:
-    links, first, body = (str(uuid.uuid4()).upper() for _ in range(3))
-    # The request body, with the shared link spliced in where OBJ sits.
-    template = json.dumps({
-        "parent": {"database_id": db},
-        "properties": {
-            "Name": {"title": [{"text": {"content": "⏳ Saving…"}}]},
-            "Source": {"url": OBJ},
-            "Queued": {"checkbox": True},
-        }}, ensure_ascii=False)
+def build(api_base: str, token: str) -> dict:
+    links, first, body, sent = (str(uuid.uuid4()).upper() for _ in range(4))
+    # The request body, with the shared link spliced in where OBJ sits. The
+    # server pulls the first http(s) link out of whatever text arrives.
+    template = json.dumps({"url": OBJ}, ensure_ascii=False)
     # attachmentsByRange counts UTF-16 code units, like NSString.
     pos = len(template[:template.index(OBJ)].encode("utf-16-le")) // 2
     actions = [
@@ -69,19 +65,22 @@ def build(token: str, db: str) -> dict:
              template, {f"{{{pos}, 1}}": _out(first, "Item from List")})}},
         {"WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
          "WFWorkflowActionParameters": {
-             "WFURL": "https://api.notion.com/v1/pages",
+             "UUID": sent,
+             "WFURL": api_base.rstrip("/") + "/v1/save",
              "WFHTTPMethod": "POST",
              "ShowHeaders": True,
              "WFHTTPHeaders": _dict({"Authorization": f"Bearer {token}",
-                                     "Notion-Version": "2022-06-28",
                                      "Content-Type": "application/json"}),
              "WFHTTPBodyType": "File",
              "WFRequestVariable": _token(_out(body, "Text")),
          }},
+        # Show what the server actually answered ({"queued": ...} or an error),
+        # not a hard-coded "Saved" — the old one said Saved while every request
+        # to Notion was failing.
         {"WFWorkflowActionIdentifier": "is.workflow.actions.notification",
          "WFWorkflowActionParameters": {
              "WFNotificationActionTitle": "Afterscroll",
-             "WFNotificationActionBody": "Saved. It'll be sorted in about a minute.",
+             "WFNotificationActionBody": _text(f"{OBJ}", {"{0, 1}": _out(sent, "Contents of URL")}),
              "WFNotificationActionSound": False}},
     ]
     return {
@@ -102,13 +101,19 @@ def build(token: str, db: str) -> dict:
 def main() -> int:
     load_env()
     import os
-    token, db = os.environ["NOTION_TOKEN"], os.environ["NOTION_DATABASE_ID"]
+    token, base = os.environ["APP_TOKEN"], os.environ["APP_API_BASE"]
     out_dir = PROJ / "ios" / "build"
     out_dir.mkdir(parents=True, exist_ok=True)
-    raw, signed = out_dir / "Afterscroll-unsigned.shortcut", out_dir / "Afterscroll.shortcut"
-    raw.write_bytes(plistlib.dumps(build(token, db), fmt=plistlib.FMT_BINARY))
-    subprocess.run(["shortcuts", "sign", "--mode", "anyone", "--input", str(raw),
-                    "--output", str(signed)], check=True, capture_output=True, text=True)
+    raw, signed = out_dir / "Save-to-Afterscroll-unsigned.shortcut", out_dir / "Save to Afterscroll.shortcut"
+    raw.write_bytes(plistlib.dumps(build(base, token), fmt=plistlib.FMT_BINARY))
+    # `shortcuts sign` fails now and then on a cold start; a second try works.
+    for attempt in (1, 2):
+        r = subprocess.run(["shortcuts", "sign", "--mode", "anyone", "--input", str(raw),
+                            "--output", str(signed)], capture_output=True, text=True)
+        if r.returncode == 0:
+            break
+        if attempt == 2:
+            raise SystemExit(f"shortcuts sign failed: {r.stderr.strip()}")
     raw.unlink()
     print(f"wrote {signed} ({signed.stat().st_size} bytes)")
     return 0
