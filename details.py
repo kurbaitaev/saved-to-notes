@@ -83,6 +83,8 @@ SCHEMA = {
 }
 
 _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_JUNK_DOSE = {"not specified", "unspecified", "n/a", "na", "none", "unknown", "-", "?",
+              "hold", "reps", "reps each side", "hold / reps", "varies"}
 _TIME = re.compile(r"^\d{1,2}:\d{2}$")
 
 
@@ -119,7 +121,10 @@ def clean(category: str, raw) -> dict:
             moves = []
             for m in v if isinstance(v, list) else []:
                 if isinstance(m, dict) and _s(m.get("name")):
-                    moves.append({k: _s(m.get(k)) for k in ("name", "dose", "cues") if _s(m.get(k))})
+                    mv = {k: _s(m.get(k)) for k in ("name", "dose", "cues") if _s(m.get(k))}
+                    if mv.get("dose", "").lower() in _JUNK_DOSE:
+                        mv.pop("dose")  # the model saying it doesn't know is not a dose
+                    moves.append(mv)
                 elif _s(m):
                     moves.append({"name": _s(m)})
             if moves:

@@ -122,6 +122,20 @@ struct Exercise: Decodable, Hashable {
     var name: String
     var dose: String?
     var cues: String?
+
+    enum CodingKeys: String, CodingKey { case name, dose, cues }
+
+    init(from d: Decoder) throws {
+        let c = try d.container(keyedBy: CodingKeys.self)
+        name = try c.decode(String.self, forKey: .name)
+        cues = try c.decodeIfPresent(String.self, forKey: .cues)
+        // "not specified", "n/a", "hold"… are the model saying it doesn't know.
+        let raw = try c.decodeIfPresent(String.self, forKey: .dose)?.trimmingCharacters(in: .whitespaces)
+        dose = raw.flatMap { Self.junk.contains($0.lowercased()) ? nil : $0 }
+    }
+
+    static let junk: Set = ["not specified", "unspecified", "n/a", "na", "none", "unknown", "-", "?",
+                            "hold", "reps", "reps each side", "hold / reps", "varies"]
 }
 
 /// One exercise as the app shows it: its own clip when the reel was split,

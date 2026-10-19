@@ -6,7 +6,7 @@ struct MoveView: View {
     @EnvironmentObject var store: Store
     @State private var byCreator = false
     @State private var area: String?
-    @State private var playing: [Save]?
+    @State private var playing: PlayList?
 
     private let cols = [GridItem(.flexible(), spacing: 12), GridItem(.flexible(), spacing: 12)]
 
@@ -26,9 +26,7 @@ struct MoveView: View {
                 if byCreator { creators(all) } else { workouts(all) }
             }
         }
-        .fullScreenCover(item: Binding(get: { playing.map(PlayList.init) }, set: { playing = $0?.saves })) {
-            RoutinePlayer(saves: $0.saves)
-        }
+        .fullScreenCover(item: $playing) { RoutinePlayer(saves: $0.saves, start: $0.start) }
     }
 
     @ViewBuilder private func workouts(_ all: [Save]) -> some View {
@@ -87,7 +85,8 @@ struct MoveView: View {
                         }
                         LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 8) {
                             ForEach(Array(steps.enumerated()), id: \.offset) { i, st in
-                                NavigationLink(value: s) {
+                                // A tile opens the player at that very move.
+                                Button { playing = PlayList(saves: [s], start: i) } label: {
                                     VStack(alignment: .leading, spacing: 4) {
                                         ClipTile(clip: st.clip ?? s.cover, radius: 10)
                                             .overlay(alignment: .topLeading) {
@@ -105,7 +104,7 @@ struct MoveView: View {
                         }
                     }
                 }
-                WideButton(label: "Follow along") { playing = saves }
+                WideButton(label: "Follow along") { playing = PlayList(saves: saves) }
             }
         }
         // One workout from a creator: a compact row, not a mostly-empty collage.
@@ -125,7 +124,7 @@ struct MoveView: View {
                             }
                         }
                         .buttonStyle(.plain)
-                        Button { playing = saves } label: {
+                        Button { playing = PlayList(saves: saves) } label: {
                             Image(systemName: "play.fill").font(.system(size: 15)).foregroundStyle(Theme.ink)
                                 .frame(width: 44, height: 44).overlay(Circle().stroke(Theme.line))
                         }
@@ -160,7 +159,8 @@ struct MoveView: View {
 
 private struct PlayList: Identifiable {
     let saves: [Save]
-    var id: String { saves.map(\.id).joined() }
+    var start = 0
+    var id: String { saves.map(\.id).joined() + "@\(start)" }
 }
 
 private struct Tile: View {
@@ -200,8 +200,24 @@ private struct Tile: View {
 struct RoutinePlayer: View {
     let saves: [Save]
     @Environment(\.dismiss) private var dismiss
-    @State private var step = 0
+    @State private var step: Int
     @State private var started = Date()
+
+    /// `start` opens straight at a move — tapping a move anywhere lands here.
+    init(saves: [Save], start: Int = 0) {
+        self.saves = saves
+        _step = State(initialValue: start)
+    }
+
+    private func next() {
+        if step + 1 < steps.count { step += 1 } else { dismiss() }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    private func back() {
+        if step > 0 { step -= 1 }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
 
     private struct Item { let save: Save; let step: Step?; let index: Int; let total: Int; let workout: Int }
 
@@ -242,6 +258,23 @@ struct RoutinePlayer: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: 22))
                         .id(s.step?.clip?.key ?? s.save.id)
+                        // Like Instagram stories: tap the left third to go back,
+                        // anywhere else for the next move.
+                        .overlay {
+                            GeometryReader { g in
+                                HStack(spacing: 0) {
+                                    Color.clear.contentShape(Rectangle())
+                                        .frame(width: g.size.width / 3)
+                                        .onTapGesture { back() }
+                                        .accessibilityLabel("Previous move")
+                                        .accessibilityAddTraits(.isButton)
+                                    Color.clear.contentShape(Rectangle())
+                                        .onTapGesture { next() }
+                                        .accessibilityLabel("Next move")
+                                        .accessibilityAddTraits(.isButton)
+                                }
+                            }
+                        }
                     VStack(alignment: .leading, spacing: 4) {
                         Eyebrow(text: "Workout \(s.workout + 1) of \(saves.count)" + (s.step == nil ? "" : " · move \(s.index + 1) of \(s.total)"),
                                 color: Theme.signal)
@@ -258,11 +291,11 @@ struct RoutinePlayer: View {
                     }
                     HStack(spacing: 10) {
                         if step > 0 {
-                            Button("Back") { step -= 1 }
+                            Button("Back") { back() }
                                 .font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.ink)
                                 .frame(width: 112, height: 56).overlay(Capsule().stroke(Theme.line))
                         }
-                        Button { if step + 1 < steps.count { step += 1 } else { dismiss() } } label: {
+                        Button { next() } label: {
                             Text(step + 1 < steps.count ? (steps[step + 1].workout == s.workout ? "Next move" : "Next workout") : "Done")
                                 .font(.system(size: 17, weight: .bold)).foregroundStyle(Theme.ground)
                                 .frame(maxWidth: .infinity, minHeight: 56).background(Capsule().fill(Theme.signal))
@@ -280,9 +313,19 @@ struct RoutinePlayer: View {
 
 struct MovesList: View {
     let steps: [Step]
+    /// Tapping a move opens the player at that move.
+    var open: (Int) -> Void = { _ in }
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(Array(steps.enumerated()), id: \.offset) { i, m in
+                Button { open(i) } label: { row(i, m) }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Opens this move in the player")
+            }
+        }
+    }
+
+    private func row(_ i: Int, _ m: Step) -> some View {
                 HStack(alignment: .top, spacing: 12) {
                     if let clip = m.clip {
                         // Each exercise loops on its own — the "gif per move".
@@ -298,8 +341,7 @@ struct MovesList: View {
                     Spacer(minLength: 0)
                 }
                 .padding(.vertical, 10)
+                .contentShape(Rectangle())
                 .overlay(alignment: .bottom) { Rectangle().fill(Theme.hair).frame(height: 1) }
-            }
-        }
     }
 }

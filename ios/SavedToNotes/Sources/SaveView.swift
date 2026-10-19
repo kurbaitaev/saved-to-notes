@@ -11,7 +11,10 @@ struct SaveView: View {
     @Environment(\.openURL) private var openURL
     @State private var steps: [String] = []
     @State private var addingEvent = false
-    @State private var playing = false
+    /// The move to open the player at. One value, not a flag plus an index:
+    /// with two, the player was built before the index landed and always
+    /// opened at move 1.
+    @State private var playAt: PlayAt?
 
     var body: some View {
         ZStack {
@@ -45,7 +48,7 @@ struct SaveView: View {
         .toolbarBackground(Theme.ground, for: .navigationBar)
         .task { steps = save.details.steps ?? [] }
         .sheet(isPresented: $addingEvent) { EventEditor(save: save).ignoresSafeArea() }
-        .fullScreenCover(isPresented: $playing) { RoutinePlayer(saves: [save]) }
+        .fullScreenCover(item: $playAt) { RoutinePlayer(saves: [save], start: $0.index) }
         .onAppear { if save.kind == .cook { UIApplication.shared.isIdleTimerDisabled = true } }
         .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
     }
@@ -74,7 +77,7 @@ struct SaveView: View {
                 }
                 OutlineButton(label: store.isDone(save) ? "Bought ✓" : "Mark bought") { store.toggleDone(save) }
             case .move:
-                WideButton(label: "Start") { playing = true }
+                WideButton(label: "Start") { playAt = PlayAt(index: 0) }
                 OutlineButton(label: store.inRoutine(save) ? "In routine ✓" : "Add to routine") { store.toggleRoutine(save) }
             case .cook:
                 EmptyView()
@@ -93,7 +96,7 @@ struct SaveView: View {
         let d = save.details
         switch save.kind {
         case .move:
-            if !save.steps.isEmpty { section("Moves · \(save.steps.count)"); MovesList(steps: save.steps) }
+            if !save.steps.isEmpty { section("Moves · \(save.steps.count)"); MovesList(steps: save.steps) { i in playAt = PlayAt(index: i) } }
         case .cook:
             if let ing = d.ingredients, !ing.isEmpty {
                 section("Ingredients")
@@ -178,4 +181,9 @@ struct EventEditor: UIViewControllerRepresentable {
             c.dismiss(animated: true)
         }
     }
+}
+
+struct PlayAt: Identifiable {
+    let index: Int
+    var id: Int { index }
 }
