@@ -191,3 +191,16 @@ def recent_shares(hours: int = 24, limit: int = 5) -> list[dict]:
         return [dict(r) for r in c.execute(
             "select url, ts, status, category, title from shares where ts > ? "
             "order by ts desc limit ?", (time.time() - hours * 3600, limit))]
+
+
+def set_moves(sid: str, moves: list[dict]) -> None:
+    """Replace a save's move list (details.moves) — rebuilt from its clips, so
+    the app shows one list in video order instead of reconciling two."""
+    with _db() as c:
+        row = c.execute("select details from saves where id=?", (sid,)).fetchone()
+        if not row:
+            return
+        d = json.loads(row["details"] or "{}")
+        d["moves"] = moves
+        c.execute("update saves set details=?, updated=? where id=?",
+                  (json.dumps(d, ensure_ascii=False), time.time(), sid))

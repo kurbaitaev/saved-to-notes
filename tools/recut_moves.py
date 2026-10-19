@@ -29,10 +29,14 @@ def main() -> int:
     for s in appdb.all_saves():
         if s["category"] != folders.MOVE or needle not in s["title"].lower():
             continue
+        # Hints come from the ORIGINAL note list when we still have it; after a
+        # first re-cut the list is the clips' own names, which is fine too.
         hints = [str(m.get("name")) for m in s["details"].get("moves") or [] if m.get("name")]
         try:
             made = clips.make_for_save(s["url"], s["id"], hints=hints)
             appdb.set_clips(s["id"], made)
+            if len(made) > 1:
+                appdb.set_moves(s["id"], clips.as_detail_moves(made, s["details"].get("moves")))
             print(f"{s['title'][:44]:<44} noted {len(hints):>2} -> cut {len(made) - 1:>2}: "
                   + ", ".join(c["name"] for c in made[1:]), flush=True)
         except Exception as e:  # noqa: BLE001

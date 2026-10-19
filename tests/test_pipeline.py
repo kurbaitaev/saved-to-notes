@@ -1339,3 +1339,73 @@ def test_moves_come_from_shots_one_exercise_each():
     assert [m["name"] for m in got] == ["Pigeon", "Butterfly", "Frog"]
     assert got[0]["start"] == 2.0 and got[0]["end"] == 5.5, "Pigeon continues into the next shot"
     assert all(a["end"] <= b["start"] for a, b in zip(got, got[1:], strict=False)), "clips never overlap"
+
+
+# --- exercise detection: robustness ------------------------------------------
+
+import shots as shotsmod  # noqa: E402
+
+
+def _two_shot_video(path, colours=("red", "blue"), secs=2):
+    import subprocess
+    inputs = []
+    for c in colours:
+        inputs += ["-f", "lavfi", "-i", f"color=c={c}:s=160x284:d={secs}:r=24"]
+    n = len(colours)
+    subprocess.run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", *inputs, "-filter_complex",
+                    "".join(f"[{i}:v]" for i in range(n)) + f"concat=n={n}:v=1[v]", "-map", "[v]",
+                    "-pix_fmt", "yuv420p", str(path)], check=True)
+
+
+def test_shots_find_a_real_cut_and_a_clip_is_checked_for_one(tmp_path):
+    """Real ffmpeg on a real file: the cut between two colours is found, and a
+    finished clip spanning it is flagged — the check that keeps one exercise
+    per clip."""
+    v = tmp_path / "two.mp4"
+    _two_shot_video(v)
+    sp = shotsmod.shots(v)
+    assert len(sp) == 2 and abs(sp[0][1] - 2.0) < 0.1
+    assert clips.check_clip(v) is not None
+    one = tmp_path / "one.mp4"
+    _two_shot_video(one, colours=("green",), secs=3)
+    assert clips.check_clip(one) is None
+
+
+def test_without_gemini_the_shots_still_become_exact_clips(tmp_path):
+    """No key or a dead API must not mean wrong clips: each shot becomes
+    'Move n', never a guessed range."""
+    import os
+    v = tmp_path / "three.mp4"
+    _two_shot_video(v, colours=("red", "blue", "green"))
+    saved = os.environ.pop("GEMINI_API_KEY", None)
+    try:
+        moves = clips.detect(v, tmp_path)
+    finally:
+        if saved is not None:
+            os.environ["GEMINI_API_KEY"] = saved
+    assert [m["name"] for m in moves] == ["Move 1", "Move 2", "Move 3"]
+    assert all(0 < m["end"] - m["start"] <= 2.0 for m in moves)
+
+
+def test_gemini_answers_are_clamped_to_their_shot():
+    spans = [(0.0, 2.0), (2.0, 14.0)]
+    raw = [{"range": 1, "name": "Pigeon", "cue": "hips square", "dose": "not specified"},
+           {"range": 1, "name": "Second move in a short shot"},          # short shot: one only
+           {"range": 2, "name": "Frog", "start": 1.0, "end": 6.0},       # starts before its shot
+           {"range": 2, "name": "Butterfly", "start": 7.0, "end": 30.0},  # ends after it
+           {"range": 9, "name": "No such shot"}, "junk", {"range": 2, "name": "none"}]
+    got = clips.per_shot(raw, spans)
+    assert [g["name"] for g in got] == ["Pigeon", "Frog", "Butterfly"]
+    assert got[0]["dose"] == "" and got[0]["cue"] == "hips square"
+    assert got[1]["start"] == 2.0 and got[2]["end"] == 14.0
+
+
+def test_the_save_move_list_is_rebuilt_from_the_clips():
+    made = [{"name": "Whole reel"},
+            {"name": "Pigeon", "cue": "", "dose": ""},
+            {"name": "Frog", "cue": "knees wide", "dose": "30 s"}]
+    noted = [{"name": "pigeon", "dose": "1 min each side", "cues": "square hips"},
+             {"name": "Couch stretch", "dose": "1 min"}]
+    assert clips.as_detail_moves(made, noted) == [
+        {"name": "Pigeon", "dose": "1 min each side", "cues": "square hips"},
+        {"name": "Frog", "dose": "30 s", "cues": "knees wide"}]

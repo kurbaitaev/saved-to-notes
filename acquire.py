@@ -21,6 +21,7 @@ import urllib.parse
 import urllib.request
 
 import article
+import shots
 
 # Re-exported: everything downstream says acquire.AcquireError.
 from errors import AcquireError  # noqa: F401
@@ -156,6 +157,9 @@ def _duration(path: str) -> float:
         return 0.0
 
 
+MAX_SHOT_FRAMES = 16  # one frame per shot, up to this many
+
+
 def video_frames(video_path: str, short: str, n: int) -> list:
     """Sample n evenly-spaced frames so the agent can read on-screen text.
 
@@ -170,6 +174,19 @@ def video_frames(video_path: str, short: str, n: int) -> list:
     span = dur * 0.84
     start = dur * 0.08
     stamps = [start + span * (i / max(n - 1, 1)) for i in range(n)] if n > 1 else [dur / 2]
+    # A reel edited as one shot per item (exercises, places, products) needs
+    # one frame per SHOT: 8 evenly spaced frames of a 22 s reel with 12
+    # exercises showed the note-writer 8 of them, and the note listed 8.
+    try:
+        cut_shots = shots.shots(video_path)
+    except Exception:  # noqa: BLE001 — sampling must never fail the reel
+        cut_shots = []
+    if len(cut_shots) >= 3:
+        mids = [a + (b - a) * 0.45 for a, b in cut_shots]
+        if len(mids) > MAX_SHOT_FRAMES:
+            step = len(mids) / MAX_SHOT_FRAMES
+            mids = [mids[int(i * step)] for i in range(MAX_SHOT_FRAMES)]
+        stamps = mids
     frames = []
     for i, t in enumerate(stamps):
         out = str(TMP / f"{short}-frame{i}.jpg")

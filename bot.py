@@ -1166,7 +1166,12 @@ def _sync_app(obj: dict, media: dict, url: str, date_iso: str) -> str:
     def cut() -> None:
         try:
             hints = [str(m.get("name")) for m in det.get("moves") or [] if m.get("name")]
-            appdb.set_clips(sid, clips.make_for_save(url, sid, hints=hints))
+            made = clips.make_for_save(url, sid, hints=hints)
+            appdb.set_clips(sid, made)
+            if len(made) > 1:
+                # The video decides which moves exist; the note lends names,
+                # cues and doses (clips.as_detail_moves).
+                appdb.set_moves(sid, clips.as_detail_moves(made, det.get("moves")))
         except Exception as e:  # noqa: BLE001
             # The save is in the app either way; it just shows without a loop.
             log.warning("clips for %s failed: %s", url, e)
