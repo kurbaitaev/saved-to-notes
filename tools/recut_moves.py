@@ -25,6 +25,9 @@ import folders  # noqa: E402
 
 def main() -> int:
     load_env()
+    # Show clips.py's warnings (failed calls, fallbacks) instead of a silent "cut 0".
+    import logging
+    logging.basicConfig(level=logging.WARNING, format="  %(levelname)s %(message)s")
     needle = (sys.argv[1] if len(sys.argv) > 1 else "").lower()
     for s in appdb.all_saves():
         if s["category"] != folders.MOVE or needle not in s["title"].lower():

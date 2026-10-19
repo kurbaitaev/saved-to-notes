@@ -58,10 +58,10 @@ _SHOT_PROMPT = (
     f"{SPLIT_MIN:.0f} s shows exactly ONE exercise. A longer range filmed in one take may "
     "show several — then give each its own start and end (seconds, one decimal) INSIDE "
     "that range. Skip ranges with no exercise (talking, title card).\n"
-    "For each exercise give: `name` (short, what is actually shown), `cue` (one short "
-    "form tip, from the speech or on-screen text if there is one, else from what you "
-    "see), `dose` (reps or time ONLY if said or shown, e.g. \"20 reps\", \"1 min each "
-    "side\"; else \"\").\n"
+    "For each exercise give: `name` (short, what is actually shown), `cue` (one short tip "
+    "on HOW to do THIS move — body position or what to feel; never a caption that sits "
+    "over the whole video), `dose` (reps or time ONLY if said or shown, e.g. \"20 reps\", "
+    "\"1 min each side\"; else \"\").\n"
     "Reply with ONLY JSON: "
     '[{{"range": 1, "name": "...", "cue": "...", "dose": "", "start": 0.0, "end": 0.0}}]\n'
     "Ranges (seconds):\n{ranges}")
@@ -309,11 +309,22 @@ def make_for_save(url: str, sid: str, video_path: str | None = None,
         staged.mkdir()
         made = [{"name": "Whole reel", "file": f"{sid}/loop.mp4", "start": 0.0, "end": None}]
         cut(src, staged / "loop.mp4")
-        try:
-            moves = detect(src, work, hints)
-        except Exception as e:  # noqa: BLE001
-            log.warning("move detection failed for %s: %s", url, e)
-            moves = []
+        moves: list[dict] = []
+        for attempt in (1, 2):
+            try:
+                moves = detect(src, work, hints)
+                break
+            except Exception as e:  # noqa: BLE001
+                log.warning("move detection failed for %s (attempt %d): %s", url, attempt, e)
+        if not moves:
+            # Never zero clips for a video that has cuts: one bulk re-cut lost
+            # all six of a workout's moves to a single failed call. The shots
+            # themselves are exact; they just go unnamed.
+            spans = shots.shots(src)
+            if len(spans) >= 2:
+                moves = moves_from_shots([{"name": f"Move {i}", "start": a, "end": b, "shot": i - 1}
+                                          for i, (a, b) in enumerate(spans, 1)])
+                log.warning("using %d unnamed shots for %s", len(moves), url)
         for i, m in enumerate(moves, 1):
             out = staged / f"move{i}.mp4"
             cut(src, out, m["start"], m["end"], crf=28)
