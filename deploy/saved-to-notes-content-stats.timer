@@ -1,0 +1,10 @@
+[Unit]
+Description=Pull reel views every 3 days (checked daily at 10:00; content.py skips a pass under 3 days old)
+
+[Timer]
+OnCalendar=*-*-* 10:00
+# A server that was down at 10:00 runs it on boot instead of waiting a day.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

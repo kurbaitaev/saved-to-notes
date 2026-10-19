@@ -1,0 +1,10 @@
+[Unit]
+Description=saved-to-notes: pull views of posted reels into Content Ideas
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DIR__
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=__PYTHON__ __DIR__/content.py stats
+StandardOutput=append:__DIR__/logs/content.out.log
+StandardError=append:__DIR__/logs/content.err.log

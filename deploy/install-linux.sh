@@ -1,6 +1,7 @@
 #!/bin/bash
 # Install saved-to-notes on a Linux VPS as systemd --user units:
-#   the bot (always on), the watchdog (every 90 min), the digest (Sunday 18:00).
+#   the bot (always on), the watchdog (every 90 min), the digest (Sunday 18:00),
+#   remake drafts (every 15 min) and reel views (every 3 days).
 # Run as the normal user that owns the checkout, from anywhere:
 #   ./deploy/install-linux.sh
 set -euo pipefail
@@ -32,6 +33,8 @@ for unit in saved-to-notes.service \
             saved-to-notes-watchdog.service saved-to-notes-watchdog.timer \
             saved-to-notes-digest.service   saved-to-notes-digest.timer \
             saved-to-notes-vaultsync.service saved-to-notes-vaultsync.timer \
+            saved-to-notes-content-drafts.service saved-to-notes-content-drafts.timer \
+            saved-to-notes-content-stats.service saved-to-notes-content-stats.timer \
             afterscroll-api.service; do
   render "$HERE/deploy/$unit" > "$UNIT_DIR/$unit"
 done
@@ -41,6 +44,8 @@ systemctl --user enable --now saved-to-notes.service
 systemctl --user enable --now saved-to-notes-watchdog.timer
 systemctl --user enable --now saved-to-notes-digest.timer
 systemctl --user enable --now saved-to-notes-vaultsync.timer
+systemctl --user enable --now saved-to-notes-content-drafts.timer
+systemctl --user enable --now saved-to-notes-content-stats.timer
 # The app's API needs a token; make one the first time (never printed).
 grep -q '^APP_TOKEN=.' "$HERE/.env" 2>/dev/null \
   || echo "APP_TOKEN=$("$PYTHON" -c 'import secrets;print(secrets.token_urlsafe(32))')" >> "$HERE/.env"

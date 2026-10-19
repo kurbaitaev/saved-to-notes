@@ -1388,3 +1388,42 @@ def test_answers_are_matched_to_shots_by_time_not_by_label():
     got = clips.per_shot(raw, spans)
     assert [g["name"] for g in got] == ["Hip extensions", "L-sit to crab", "W slides"]
     assert got[0]["dose"] == "20 reps"
+
+
+# --- content pipeline: remake drafts and reel views ----------------------------
+
+import content  # noqa: E402
+
+
+def test_variants_of_one_video_are_summed_and_the_best_one_linked():
+    """He posts several trial variants with one caption; they are one video."""
+    reels = [{"shortCode": "A", "ownerUsername": "kurbaitaev", "caption": "Парадокс Соломона…",
+              "videoPlayCount": 164, "likesCount": 1, "commentsCount": 0, "timestamp": "2026-10-19T06:52:00Z"},
+             {"shortCode": "B", "ownerUsername": "kurbaitaev", "caption": "Парадокс Соломона…",
+              "videoPlayCount": 2061, "likesCount": 37, "commentsCount": 1, "timestamp": "2026-10-19T06:50:56Z"},
+             {"shortCode": "C", "ownerUsername": "kurbaiitaev", "caption": "10/10 habits",
+              "videoPlayCount": 1783, "likesCount": -1, "commentsCount": 1, "timestamp": "2026-08-21T02:09:04Z"}]
+    groups = content.group_reels(reels)
+    assert len(groups) == 2
+    t = content.totals(groups["kurbaitaev:парадокс соломона"])
+    assert (t["views"], t["likes"], t["variants"]) == (2225, 38, 2)
+    assert t["best"].endswith("/reel/B/") and t["first"] == "2026-10-19"
+    assert content.totals(groups["kurbaiitaev:10 10 habits"])["likes"] == 0  # hidden likes come back as -1
+
+
+def test_a_bookmark_already_remade_is_not_drafted_twice():
+    """Rows point at their source either by reel link or by the bookmark's Notion URL."""
+    rows = [{"properties": {"Source": {"url": "https://www.instagram.com/reels/Dcexjb8vN2C/?igsh=x"}}},
+            {"properties": {"Source": {"url": "https://app.notion.com/p/3d3c2f1cc6ec8123b06ff1175aaaaaaa"}}},
+            {"properties": {"Source": {"url": None}}}]
+    keys = content.covered_keys(rows)
+    assert acquire.normalize_url("https://instagram.com/reel/Dcexjb8vN2C/") in keys
+    assert content.nid("3d3c2f1c-c6ec-8123-b06f-f1175aaaaaaa") in keys
+
+
+def test_a_draft_is_laid_out_in_beats_for_reading_while_filming():
+    blocks = content.beat_blocks([["Попробуй работать как столяр."], ["", " "], ["Одна строка", "вторая"]])
+    heads = [b for b in blocks if b["type"] == "heading_2"]
+    assert len(heads) == 2  # the empty beat is dropped
+    assert heads[1]["heading_2"]["rich_text"][0]["text"]["content"] == "Одна строка\nвторая"
+    assert blocks[1] == {"type": "paragraph", "paragraph": {"rich_text": []}}

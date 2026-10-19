@@ -1,0 +1,10 @@
+[Unit]
+Description=saved-to-notes: draft Russian remakes for newly ticked bookmarks
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DIR__
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=__PYTHON__ __DIR__/content.py drafts
+StandardOutput=append:__DIR__/logs/content.out.log
+StandardError=append:__DIR__/logs/content.err.log
