@@ -27,7 +27,7 @@ struct SaveView: View {
                         .fixedSize(horizontal: false, vertical: true)
                     if let why = save.details.why ?? save.summary.nilIfEmpty {
                         Text(why).font(.system(size: 16)).foregroundStyle(Theme.ink.opacity(0.85))
-                            .fixedSize(horizontal: false, vertical: true)
+                            .lineLimit(4)
                     }
                     actions
                     kindBody
