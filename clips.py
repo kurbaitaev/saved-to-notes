@@ -149,6 +149,7 @@ def find_moves(src: pathlib.Path, work: pathlib.Path, hints: list[str] | None = 
 
 SCENE = 0.3        # ffmpeg scene-change score that counts as a cut
 MIN_SHOT = 0.8     # shorter shots are flashes/transitions, merged into a neighbour
+SPLIT_MIN = 5.0    # only a shot this long may hold more than one exercise
 
 
 def shots(src: pathlib.Path) -> list[tuple[float, float]]:
@@ -197,6 +198,13 @@ def name_shots(src: pathlib.Path, work: pathlib.Path, spans: list[tuple[float, f
         if not (0 <= i < len(spans)) or not name or name.lower() in ("none", "n/a"):
             continue
         lo, hi = spans[i]
+        if hi - lo < SPLIT_MIN:
+            # A short shot is one exercise — Gemini split igor.system's 2 s
+            # shots in two. Keep its first answer, over the whole shot.
+            if any(o["shot"] == i for o in out):
+                continue
+            out.append({"name": name, "start": lo, "end": hi, "shot": i})
+            continue
         try:
             a, b = float(e.get("start", lo)), float(e.get("end", hi))
         except (TypeError, ValueError):
