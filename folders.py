@@ -75,8 +75,9 @@ DESCRIPTIONS = {
     ATTEND: "a dated event to go to: meetup, conference, concert, fight night, "
             "festival, exhibition, class",
     COOK: "a recipe, drink or food to make",
-    MOVE: "an exercise, workout, mobility or stretching routine, or training drill you "
-          "could do along with the video",
+    MOVE: "a mobility, stretching or workout routine you would do along with the video, "
+          "at home or in a gym (NOT sport-specific training plans, technique or drills "
+          "for a martial art or sport — those are How-to)",
 }
 
 # The tie-breaks are the whole point: they are the crossover decisions, made once.
@@ -109,7 +110,9 @@ Tie-breaks, in order:
    argument is the point, and you'd retell it in your own words → {IDEA}.
 7. **{IDEA} vs {EXPLAINER}.** A perspective or opinion → {IDEA}. Facts or a
    mechanism → {EXPLAINER}. Training theory you can't follow along with →
-   {EXPLAINER}; a routine you can → {MOVE}.
+   {EXPLAINER}; a routine you can → {MOVE}. A sport's training plan, schedule,
+   technique or drill (judo, wrestling, BJJ, boxing…) → {HOW_TO}, not {MOVE}:
+   {MOVE} is only routines a person would follow along with at home or in a gym.
 8. **{ATTEND} vs {VISIT}.** Has a date → {ATTEND}. Otherwise → {VISIT}.
 9. Never invent a category and never leave it blank — worst case use **{DEFAULT}**.
 """
