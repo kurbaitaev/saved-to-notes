@@ -68,24 +68,41 @@ struct MoveView: View {
                         Text(summary(saves)).font(.system(size: 13)).foregroundStyle(Theme.mute)
                     }
                 }
-                // A collage: every move from this creator, each looping on its own.
-                let tiles = saves.flatMap { s in s.moves.isEmpty ? [(s, s.cover, s.name)] : s.moves.map { (s, Optional($0.clip), $0.name) } }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 8) {
-                    ForEach(Array(tiles.enumerated()), id: \.offset) { i, t in
-                        NavigationLink(value: t.0) {
-                            VStack(alignment: .leading, spacing: 4) {
-                                ClipTile(clip: t.1, radius: 10)
-                                    .overlay(alignment: .topLeading) {
-                                        Text("\(i + 1)").font(.system(size: 11, weight: .bold))
-                                            .foregroundStyle(i == 0 ? Theme.ground : Theme.ink)
-                                            .frame(width: 18, height: 18)
-                                            .background(Circle().fill(i == 0 ? Theme.signal : Theme.line))
-                                            .padding(5)
+                // A collage per workout: its moves, each looping on its own, under
+                // the workout's name — one wall of 17 mixed tiles was unreadable.
+                ForEach(saves) { s in
+                    let steps = s.steps
+                    VStack(alignment: .leading, spacing: 8) {
+                        if saves.count > 1 {
+                            NavigationLink(value: s) {
+                                HStack {
+                                    Text(s.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
+                                    Text("· \(steps.count) moves").font(.system(size: 13)).foregroundStyle(Theme.mute)
+                                    Spacer()
+                                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.line)
+                                }
+                                .frame(minHeight: 32)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 8) {
+                            ForEach(Array(steps.enumerated()), id: \.offset) { i, st in
+                                NavigationLink(value: s) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        ClipTile(clip: st.clip ?? s.cover, radius: 10)
+                                            .overlay(alignment: .topLeading) {
+                                                Text("\(i + 1)").font(.system(size: 11, weight: .bold))
+                                                    .foregroundStyle(i == 0 ? Theme.ground : Theme.ink)
+                                                    .frame(width: 18, height: 18)
+                                                    .background(Circle().fill(i == 0 ? Theme.signal : Theme.line))
+                                                    .padding(5)
+                                            }
+                                        Text(st.name).font(.system(size: 11)).foregroundStyle(Theme.soft).lineLimit(2)
                                     }
-                                Text(t.2).font(.system(size: 11)).foregroundStyle(Theme.soft).lineLimit(2)
+                                }
+                                .buttonStyle(.plain)
                             }
                         }
-                        .buttonStyle(.plain)
                     }
                 }
                 WideButton(label: "Follow along") { playing = saves }
@@ -125,7 +142,7 @@ struct MoveView: View {
 
     /// Worth a collage: several workouts, or one reel split into several moves.
     private func isSet(_ saves: [Save]) -> Bool {
-        saves.count > 1 || saves.reduce(0) { $0 + $1.moves.count } > 1
+        saves.count > 1 || saves.reduce(0) { $0 + $1.steps.count } > 1
     }
 
     private func initials(_ name: String) -> String {

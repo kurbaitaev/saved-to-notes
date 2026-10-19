@@ -16,6 +16,8 @@ final class Store: ObservableObject {
     @Published var loading = false
     /// Links sent from the phone that the server is still sorting.
     @Published var pending = 0
+    /// Links shared from the phone in the last day, and where each went.
+    @Published var recent: [Share] = []
     private var watching = false
     @Published var error: String?
     /// Place pins, found on the phone with Apple Maps search — free, no key,
@@ -37,7 +39,7 @@ final class Store: ObservableObject {
             while pending > 0 && tries < 60 {
                 try? await Task.sleep(for: .seconds(4))
                 tries += 1
-                if let (s, p) = try? await client.saves() { saves = s; pending = p }
+                if let (s, p, r) = try? await client.saves() { saves = s; pending = p; recent = r }
             }
             watching = false
             await load()   // clips, pins and cache for whatever just arrived
@@ -46,16 +48,20 @@ final class Store: ObservableObject {
 
     func load() async {
         loading = true; error = nil
-        do { (saves, pending) = try await client.saves() }
+        do { (saves, pending, recent) = try await client.saves() }
         catch { self.error = error.localizedDescription }
         if pending > 0 { watch() }
         loading = false
         pins = local.pins
         await locatePlaces()
-        // Pre-fetch every loop so the morning routine plays offline and instantly.
-        for s in of(.move) {
-            for c in ([s.loop].compactMap { $0 } + s.moves.map(\.clip)) {
-                _ = try? await ClipCache.shared.file(for: c)
+        // Pre-fetch every loop so the morning routine plays offline and
+        // instantly — six at a time: one by one, ~40 clips left the tiles grey
+        // for ten seconds on first open.
+        let all = of(.move).flatMap { s in [s.loop].compactMap { $0 } + s.moves.map(\.clip) }
+        await withTaskGroup(of: Void.self) { g in
+            for (i, c) in all.enumerated() {
+                if i >= 6 { await g.next() }
+                g.addTask { _ = try? await ClipCache.shared.file(for: c) }
             }
         }
     }
@@ -72,12 +78,26 @@ final class Store: ObservableObject {
 
     // MARK: - Morning routine: an ordered pick of Move saves
 
-    /// Defaults to every saved workout, newest first, until reordered.
+    /// Until edited: the newest workouts that fit in about a quarter of an
+    /// hour (it was every workout — 34 minutes is not a morning routine).
+    /// Once edited, exactly the person's pick, even if they emptied it.
     var routine: [Save] {
         let moves = of(.move)
-        let order = local.routine.filter { id in moves.contains { $0.id == id } }
-        guard !order.isEmpty else { return moves }
-        return order.compactMap { id in moves.first { $0.id == id } }
+        let stored = local.routine
+        guard !stored.isEmpty else {
+            var pick: [Save] = [], total = 0
+            for s in moves where pick.count < 3 {
+                let m = Self.minutes(s)
+                if !pick.isEmpty && total + m > 15 { break }
+                pick.append(s); total += m
+            }
+            return pick
+        }
+        return stored.compactMap { id in moves.first { $0.id == id } }  // "-" = deliberately empty
+    }
+
+    static func minutes(_ s: Save) -> Int {
+        s.details.minutes ?? max(2, s.steps.count)
     }
     func inRoutine(_ s: Save) -> Bool { routine.contains(s) }
     func toggleRoutine(_ s: Save) {
@@ -86,9 +106,7 @@ final class Store: ObservableObject {
         local.routine = r.isEmpty ? ["-"] : r   // "-" marks "deliberately empty"
         objectWillChange.send()
     }
-    var routineMinutes: Int {
-        routine.reduce(0) { $0 + ($1.details.minutes ?? max(1, ($1.details.moves?.count ?? 1))) }
-    }
+    var routineMinutes: Int { routine.reduce(0) { $0 + Self.minutes($1) } }
 
     // MARK: - Map
 
@@ -146,16 +164,25 @@ actor ClipCache {
         return u
     }()
 
-    func cached(_ id: String) -> URL? {
-        let f = dir.appendingPathComponent("\(id).mp4")
+    func cached(_ id: String, ext: String = "mp4") -> URL? {
+        let f = dir.appendingPathComponent("\(id).\(ext)")
         return FileManager.default.fileExists(atPath: f.path) ? f : nil
     }
 
     func file(for clip: Clip) async throws -> URL {
-        if let f = cached(clip.key) { return f }
-        let (tmp, resp) = try await URLSession.shared.download(for: APIClient.shared.clipRequest(clip.url))
+        try await fetch(clip.url, key: clip.key, ext: "mp4")
+    }
+
+    func poster(for clip: Clip) async throws -> URL? {
+        guard let p = clip.poster else { return nil }
+        return try await fetch(p, key: clip.key, ext: "jpg")
+    }
+
+    private func fetch(_ remote: URL, key: String, ext: String) async throws -> URL {
+        if let f = cached(key, ext: ext) { return f }
+        let (tmp, resp) = try await URLSession.shared.download(for: APIClient.shared.clipRequest(remote))
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else { throw APIError.http((resp as? HTTPURLResponse)?.statusCode ?? 0) }
-        let f = dir.appendingPathComponent("\(clip.key).mp4")
+        let f = dir.appendingPathComponent("\(key).\(ext)")
         try? FileManager.default.removeItem(at: f)
         try FileManager.default.moveItem(at: tmp, to: f)
         return f

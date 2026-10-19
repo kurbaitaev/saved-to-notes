@@ -26,6 +26,8 @@ struct TodayView: View {
                 .background(RoundedRectangle(cornerRadius: 16).fill(Theme.raise))
             }
 
+            if !store.recent.filter({ $0.status != "sorting" }).isEmpty { recentShares }
+
             routineCard
 
             if !upcoming.isEmpty {
@@ -119,6 +121,48 @@ struct TodayView: View {
                 }
                 WideButton(label: "Start routine") { playing = true }
             }
+        }
+    }
+
+    /// Where the last shares went. A tip or idea shared here is filed in Notion,
+    /// not the app — without this line it just seemed to disappear.
+    @ViewBuilder private var recentShares: some View {
+        let done = store.recent.filter { $0.status != "sorting" }.prefix(3)
+        VStack(alignment: .leading, spacing: 0) {
+            Eyebrow(text: "Just saved").padding(.bottom, 6)
+            ForEach(Array(done), id: \.self) { r in
+                let save = store.saves.first { $0.sourceURL.hasPrefix(r.url) || r.url.hasPrefix($0.sourceURL) }
+                let row = HStack(spacing: 10) {
+                    Image(systemName: icon(r)).font(.system(size: 15)).foregroundStyle(r.status == "failed" ? .red : Theme.signal)
+                        .frame(width: 24)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(r.title?.nilIfEmpty ?? r.url).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
+                        Text(where_(r)).font(.system(size: 13)).foregroundStyle(Theme.mute)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .frame(minHeight: 52)
+                .overlay(alignment: .bottom) { Rectangle().fill(Theme.hair).frame(height: 1) }
+                if let save { NavigationLink(value: save) { row }.buttonStyle(.plain) } else { row }
+            }
+        }
+    }
+
+    private func icon(_ r: Share) -> String {
+        switch r.status {
+        case "app": "checkmark.circle.fill"
+        case "notion": "doc.text"
+        case "duplicate": "arrow.uturn.backward.circle"
+        default: "exclamationmark.triangle.fill"
+        }
+    }
+
+    private func where_(_ r: Share) -> String {
+        switch r.status {
+        case "app": "In the app · \(r.category ?? "")"
+        case "notion": "Filed in Notion as \(r.category ?? "a note") — not a real-life thing"
+        case "duplicate": "Already saved before"
+        default: "Couldn't save — try sharing it again"
         }
     }
 

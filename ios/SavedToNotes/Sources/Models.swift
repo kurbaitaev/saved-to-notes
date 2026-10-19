@@ -95,10 +95,22 @@ struct Details: Decodable, Hashable {
     }
 }
 
-/// A video on the server, cached on the phone under `key`.
+/// A video on the server, cached on the phone under `key`. The key carries the
+/// server's cut version, so a re-cut workout downloads its new videos instead
+/// of replaying cached ones.
 struct Clip: Hashable {
     let key: String
     let url: URL
+    /// A still of the first frame, shown at once while the video downloads.
+    var poster: URL? = nil
+
+    init(saveID: String, url: URL, poster: URL? = nil) {
+        let v = URLComponents(url: url, resolvingAgainstBaseURL: false)?
+            .queryItems?.first { $0.name == "v" }?.value ?? "0"
+        key = "\(saveID)-\(url.deletingPathExtension().lastPathComponent)-v\(v)"
+        self.url = url
+        self.poster = poster
+    }
 }
 
 struct MoveClip: Hashable {
@@ -122,19 +134,29 @@ struct Step: Hashable {
 }
 
 extension Save {
-    /// The video cuts are the truth for WHICH moves exist (Gemini watched the
-    /// reel; the text-only notes missed two of six on the hip reel). The note
-    /// adds dose and cues: by position when both lists are the same length,
-    /// otherwise by a shared word in the name.
+    /// Every move the note lists, each with its own clip when Gemini found it
+    /// (the cuts reuse the note's names), else the whole reel. The two used to
+    /// disagree — 2 cuts for 5 noted moves — and the app showed only the cuts,
+    /// silently dropping three moves and every dose. Cuts the note doesn't
+    /// mention are kept too, after the noted ones.
     var steps: [Step] {
         let noted = details.moves ?? []
-        guard !moves.isEmpty else {
-            return noted.map { Step(name: $0.name, clip: loop, dose: $0.dose, cues: $0.cues) }
+        guard !noted.isEmpty else {
+            return moves.map { Step(name: $0.name, clip: $0.clip, dose: nil, cues: nil) }
         }
-        return moves.enumerated().map { i, m in
-            let match = noted.count == moves.count ? noted[i] : noted.first { Self.related($0.name, m.name) }
-            return Step(name: m.name, clip: m.clip, dose: match?.dose, cues: match?.cues)
+        var unused = moves
+        var out: [Step] = noted.map { n in
+            let i = unused.firstIndex { Self.same($0.name, n.name) }
+                ?? unused.firstIndex { Self.related($0.name, n.name) }
+            let clip = i.map { unused.remove(at: $0).clip }
+            return Step(name: n.name, clip: clip ?? loop, dose: n.dose, cues: n.cues)
         }
+        out += unused.map { Step(name: $0.name, clip: $0.clip, dose: nil, cues: nil) }
+        return out
+    }
+
+    private static func same(_ a: String, _ b: String) -> Bool {
+        a.trimmingCharacters(in: .whitespaces).caseInsensitiveCompare(b.trimmingCharacters(in: .whitespaces)) == .orderedSame
     }
 
     private static func related(_ a: String, _ b: String) -> Bool {

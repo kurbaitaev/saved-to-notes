@@ -13,6 +13,7 @@ struct LoopView: View {
     /// Aspect-fit by default: a preview must show the whole frame, never a crop.
     var gravity: AVLayerVideoGravity = .resizeAspect
     @State private var file: URL?
+    @State private var still: UIImage?
 
     init(clip: Clip?, symbol: String = Kind.move.symbol, gravity: AVLayerVideoGravity = .resizeAspect) {
         self.clip = clip; self.symbol = symbol; self.gravity = gravity
@@ -28,6 +29,8 @@ struct LoopView: View {
             Theme.raise
             if let file {
                 LoopLayer(url: file, gravity: gravity)
+            } else if let still {
+                Image(uiImage: still).resizable().aspectRatio(contentMode: .fit)
             } else {
                 Image(systemName: symbol)
                     .font(.system(size: 22, weight: .light))
@@ -38,6 +41,9 @@ struct LoopView: View {
             file = nil
             guard let clip else { return }
             if let f = await ClipCache.shared.cached(clip.key) { file = f; return }
+            // The still first (a few KB), so the tile is a picture at once.
+            if let p = try? await ClipCache.shared.poster(for: clip),
+               let img = UIImage(contentsOfFile: p.path) { still = img }
             file = try? await ClipCache.shared.file(for: clip)
         }
     }
