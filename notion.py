@@ -393,3 +393,33 @@ def push_reel(obj: dict, source_url: str, date_iso: str,
         warning = _append_blocks(page_id, children[100:], token)
     return {"created": 1, "items": len(items), "error": "", "warning": warning,
             "page_id": page_id}
+
+
+# --- Inbox: links saved from the phone (the Afterscroll shortcut) ---------
+#
+# The shortcut can't talk to the bot (a Telegram bot never receives its own
+# messages, and the server has no public endpoint), so it writes a bare row —
+# Name "⏳ Saving…", the link in Source, Queued ticked — into this database.
+# The bot polls for those rows, archives each placeholder, and runs the link
+# through the normal pipeline, which creates the real page.
+
+def inbox_take() -> list[tuple[str, str]]:
+    """Claim every queued row: archive it and return [(url, note)]. Archiving
+    first means a slow run can never be picked up twice; a failed run is still
+    recovered because the bot's own pending queue holds the link by then."""
+    token = os.environ.get("NOTION_TOKEN", "").strip()
+    db = os.environ.get("NOTION_DATABASE_ID", "").strip()
+    if not (token and db) or _db_props(token, db).get("Queued") != "checkbox":
+        return []
+    d = _api(f"https://api.notion.com/v1/databases/{db}/query", token, "POST",
+             {"filter": {"property": "Queued", "checkbox": {"equals": True}}, "page_size": 20})
+    out = []
+    for row in d.get("results", []):
+        props = row.get("properties", {})
+        url = (props.get("Source", {}) or {}).get("url") or ""
+        note = "".join(t.get("plain_text", "") for t in
+                       (props.get("Why", {}) or {}).get("rich_text", []) or [])
+        _api(f"https://api.notion.com/v1/pages/{row['id']}", token, "PATCH", {"archived": True})
+        if url.startswith(("http://", "https://")):
+            out.append((url, note.strip()))
+    return out

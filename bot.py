@@ -1307,8 +1307,33 @@ async def _heartbeat(bot=None) -> None:
             _trim_logs()
         if bot is not None and ticks and ticks % RETRY_EVERY_MIN == 0:
             asyncio.create_task(_drain_pending(bot))
+        if bot is not None:
+            asyncio.create_task(_take_inbox(bot))
         ticks += 1
         await asyncio.sleep(60)
+
+
+def _owner_chat() -> int | None:
+    """The first allowed user. In a private chat the chat id IS the user id,
+    so links saved from the phone report back to the same Telegram chat."""
+    first = os.environ.get("ALLOWED_USER_IDS", "").split(",")[0].strip()
+    return int(first) if first.lstrip("-").isdigit() else None
+
+
+async def _take_inbox(bot) -> None:
+    """Links saved with the Afterscroll shortcut land in Notion as queued rows;
+    run each through the normal pipeline, exactly like a Telegram message."""
+    chat = _owner_chat()
+    if chat is None or not notion.enabled():
+        return
+    try:
+        links = await asyncio.to_thread(notion.inbox_take)
+    except Exception as e:  # noqa: BLE001
+        log.warning("inbox check failed: %s", e)
+        return
+    for url, note in links:
+        log.info("inbox: %s", url)
+        asyncio.create_task(process(bot, chat, url, force=False, user_note=note))
 
 
 async def _drain_pending(bot) -> None:
