@@ -120,38 +120,53 @@ def all_notes() -> list[dict]:
     return [read_note(p) for p in sorted(VAULT.glob("*/*.md"))]
 
 
+def _read_proposal() -> list[dict]:
+    if not PROPOSAL.exists():
+        return []
+    with PROPOSAL.open() as f:
+        return list(csv.DictReader(f, delimiter="\t"))
+
+
 def propose(limit: int) -> int:
-    notes = all_notes()[: limit or None]
-    print(f"{len(notes)} note(s) to classify")
-    rows, failed = [], 0
-    for start in range(0, len(notes), BATCH):
-        batch = notes[start:start + BATCH]
-        print(f"-- {start + 1}-{start + len(batch)} …", flush=True)
-        try:
-            mapping = classify(batch)
-        except Exception as e:  # noqa: BLE001
-            # Leave them out of the proposal rather than guessing: a missing row
-            # is visible, a silently defaulted one is not.
-            print(f"   batch failed ({e}); not proposed", flush=True)
-            failed += len(batch)
-            continue
-        for i, n in enumerate(batch):
-            if i not in mapping:
-                failed += 1
-                continue
-            rows.append({"path": str(n["path"].relative_to(VAULT)), "title": n["title"],
-                         "old_folder": n["old_folder"], "content_type": n["content_type"],
-                         "category": mapping[i], "area": topics.area_of(n["topics"]),
-                         "source": n["source"]})
+    """Classify every note not yet in the proposal. Rows are appended after each
+    batch, so a run that dies (it did, on batch 13 of 13) resumes instead of
+    starting over and nothing already paid for is lost."""
+    done = {r["path"] for r in _read_proposal()}
+    notes = [n for n in all_notes() if str(n["path"].relative_to(VAULT)) not in done]
+    notes = notes[: limit or None]
+    print(f"{len(done)} already proposed, {len(notes)} note(s) to classify", flush=True)
     PROPOSAL.parent.mkdir(exist_ok=True)
-    with PROPOSAL.open("w", newline="") as f:
+    new_file = not PROPOSAL.exists()
+    failed = 0
+    with PROPOSAL.open("a", newline="") as f:
         w = csv.DictWriter(f, COLS, delimiter="\t")
-        w.writeheader()
-        w.writerows(rows)
+        if new_file:
+            w.writeheader()
+        for start in range(0, len(notes), BATCH):
+            batch = notes[start:start + BATCH]
+            print(f"-- {start + 1}-{start + len(batch)} …", flush=True)
+            try:
+                mapping = classify(batch)
+            except Exception as e:  # noqa: BLE001
+                # Left out rather than guessed: a missing row is visible and
+                # gets retried on the next run, a silently defaulted one is not.
+                print(f"   batch failed ({e}); will retry next run", flush=True)
+                failed += len(batch)
+                continue
+            for i, n in enumerate(batch):
+                if i not in mapping:
+                    failed += 1
+                    continue
+                w.writerow({"path": str(n["path"].relative_to(VAULT)), "title": n["title"],
+                            "old_folder": n["old_folder"], "content_type": n["content_type"],
+                            "category": mapping[i], "area": topics.area_of(n["topics"]),
+                            "source": n["source"]})
+            f.flush()
+    rows = _read_proposal()
     counts = {}
     for r in rows:
         counts[r["category"]] = counts.get(r["category"], 0) + 1
-    print(f"\nproposed {len(rows)}, unclassified {failed} -> {PROPOSAL}")
+    print(f"\nproposed {len(rows)} in total, unclassified {failed} -> {PROPOSAL}")
     for c in folders.FOLDERS:
         print(f"  {counts.get(c, 0):>4}  {c}")
     return 1 if failed else 0
@@ -201,11 +216,10 @@ def set_notion(token: str, db: str, source: str, category: str, area: str) -> bo
 
 
 def apply() -> int:
-    if not PROPOSAL.exists():
+    rows = _read_proposal()
+    if not rows:
         print("no proposal yet — run --propose first")
         return 1
-    with PROPOSAL.open() as f:
-        rows = list(csv.DictReader(f, delimiter="\t"))
     token = os.environ.get("NOTION_TOKEN", "").strip()
     db = os.environ.get("NOTION_DATABASE_ID", "").strip()
     if token and db:
