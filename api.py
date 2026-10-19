@@ -98,8 +98,10 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError:
             return self._json(400, {"error": "body must be JSON"})
         # Shared text often wraps the link in a caption — pull the first URL out.
-        m = re.search(r"https?://\S+", str(d.get("url") or ""))
+        m = re.search(r"https?://[^\s\"'<>]+", str(d.get("url") or ""))
         if not m:
+            # What arrived instead tells us how the sharing app packs its link.
+            sys.stderr.write(f"  no link in: {json.dumps(d, ensure_ascii=False)[:600]}\n")
             return self._json(400, {"error": "no link in 'url'"})
         appdb.enqueue(m.group(0), str(d.get("note") or "")[:500])
         sys.stderr.write(f"  queued {m.group(0)[:120]}\n")

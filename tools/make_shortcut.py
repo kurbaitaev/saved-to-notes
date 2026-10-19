@@ -47,22 +47,18 @@ def _dict(pairs: dict) -> dict:
 
 
 def build(api_base: str, token: str) -> dict:
-    links, first, body, sent = (str(uuid.uuid4()).upper() for _ in range(4))
+    body, sent = (str(uuid.uuid4()).upper() for _ in range(2))
     # The request body, with the shared link spliced in where OBJ sits. The
     # server pulls the first http(s) link out of whatever text arrives.
     template = json.dumps({"url": OBJ}, ensure_ascii=False)
     # attachmentsByRange counts UTF-16 code units, like NSString.
     pos = len(template[:template.index(OBJ)].encode("utf-16-le")) // 2
     actions = [
-        {"WFWorkflowActionIdentifier": "is.workflow.actions.detect.link",
-         "WFWorkflowActionParameters": {"UUID": links,
-                                        "WFInput": _token({"Type": "ExtensionInput"})}},
-        {"WFWorkflowActionIdentifier": "is.workflow.actions.getitemfromlist",
-         "WFWorkflowActionParameters": {"UUID": first, "WFItemSpecifier": "First Item",
-                                        "WFInput": _token(_out(links, "URLs"))}},
         {"WFWorkflowActionIdentifier": "is.workflow.actions.gettext",
          "WFWorkflowActionParameters": {"UUID": body, "WFTextActionText": _text(
-             template, {f"{{{pos}, 1}}": _out(first, "Item from List")})}},
+             # The whole share, unfiltered: Instagram's item defeated "Get URLs
+             # from Input", so the server finds the link in whatever arrives.
+             template, {f"{{{pos}, 1}}": {"Type": "ExtensionInput"}})}},
         {"WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
          "WFWorkflowActionParameters": {
              "UUID": sent,
@@ -90,7 +86,11 @@ def build(api_base: str, token: str) -> dict:
         "WFWorkflowIcon": {"WFWorkflowIconStartColor": 4292093695,   # yellow
                            "WFWorkflowIconGlyphNumber": 59511},
         "WFWorkflowTypes": ["ActionExtension"],
-        "WFWorkflowInputContentItemClasses": ["WFURLContentItem", "WFStringContentItem"],
+        # Accept anything: if Instagram hands over the video or an image instead
+        # of a link, the request still arrives and the server log shows what it was.
+        "WFWorkflowInputContentItemClasses": ["WFURLContentItem", "WFStringContentItem",
+                                              "WFRichTextContentItem", "WFAVAssetContentItem",
+                                              "WFImageContentItem", "WFGenericFileContentItem"],
         "WFWorkflowOutputContentItemClasses": [],
         "WFWorkflowHasOutputFallback": False,
         "WFWorkflowImportQuestions": [],
