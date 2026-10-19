@@ -1322,3 +1322,15 @@ def test_recut_clips_get_new_urls_and_shares_report_where_they_went(tmp_path):
 
 def test_move_hints_reach_gemini_prompt():
     assert "{moves}" in clips._HINT and "Use exactly these names" in clips._HINT
+
+
+def test_moves_come_from_shots_one_exercise_each():
+    """igor.system's reels cut to a new shot per exercise; a clip must cover
+    exactly one shot (it showed 2-3 exercises when Gemini guessed timestamps).
+    Same-named neighbours merge, talking-head shots drop, edges are trimmed."""
+    spans = [(0.0, 1.9), (1.9, 3.8), (3.8, 5.6), (5.6, 7.3), (7.3, 9.2)]
+    names = ["none", "Pigeon", "Pigeon", "Deep squat", "Frog"]
+    got = clips.moves_from_shots(spans, names)
+    assert [m["name"] for m in got] == ["Pigeon", "Deep squat", "Frog"]
+    assert got[0]["start"] == 2.0 and got[0]["end"] == 5.5, "two Pigeon shots merge"
+    assert all(a["end"] <= b["start"] for a, b in zip(got, got[1:], strict=False)), "clips never overlap"

@@ -102,20 +102,21 @@ def cut(src: pathlib.Path, out: pathlib.Path, start: float = 0.0, end: float | N
     return out
 
 
-def find_moves(src: pathlib.Path, work: pathlib.Path, hints: list[str] | None = None) -> list[dict]:
-    """Ask Gemini where each exercise is. Returns validated [{name,start,end}]."""
+def _ask_gemini(src: pathlib.Path, work: pathlib.Path, prompt: str) -> str:
+    """Send a small full-length proxy of the video plus a prompt; return the
+    text reply ("" without a key)."""
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
-        return []
+        return ""
     # A small full-length proxy keeps the request well under the inline limit.
     proxy = work / "proxy.mp4"
-    _run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(src), "-t", "180", "-an",
-          "-vf", "scale=360:-2,fps=12", "-c:v", "libx264", "-preset", "veryfast", "-crf", "34",
-          "-pix_fmt", "yuv420p", str(proxy)])
+    if not proxy.exists():
+        _run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-i", str(src), "-t", "180", "-an",
+              "-vf", "scale=360:-2,fps=12", "-c:v", "libx264", "-preset", "veryfast", "-crf", "34",
+              "-pix_fmt", "yuv420p", str(proxy)])
     body = {"contents": [{"parts": [
         {"inline_data": {"mime_type": "video/mp4", "data": base64.b64encode(proxy.read_bytes()).decode()}},
-        {"text": _PROMPT + (_HINT.format(moves="\n".join(f"{i}. {h}" for i, h in enumerate(hints, 1)))
-                            if hints else "")}]}],
+        {"text": prompt}]}],
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0}}
     req = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
@@ -123,11 +124,86 @@ def find_moves(src: pathlib.Path, work: pathlib.Path, hints: list[str] | None = 
         headers={"Content-Type": "application/json", "x-goog-api-key": key})
     with urllib.request.urlopen(req, timeout=180) as r:
         reply = json.load(r)
-    text = "".join(p.get("text", "") for p in
+    return "".join(p.get("text", "") for p in
                    reply.get("candidates", [{}])[0].get("content", {}).get("parts", []))
+
+
+def _hint(hints: list[str] | None) -> str:
+    return _HINT.format(moves="\n".join(f"{i}. {h}" for i, h in enumerate(hints, 1))) if hints else ""
+
+
+def find_moves(src: pathlib.Path, work: pathlib.Path, hints: list[str] | None = None) -> list[dict]:
+    """For a reel filmed in one take: ask Gemini where each exercise is.
+    Returns validated [{name,start,end}]."""
+    text = _ask_gemini(src, work, _PROMPT + _hint(hints))
     m = re.search(r"\[.*\]", text, re.S)
     raw = json.loads(m.group(0)) if m else []
     return validate(raw, duration(src))
+
+
+# --- reels edited as one shot per exercise ---------------------------------
+# Most workout reels (igor.system's, for one) cut to a new shot for every
+# exercise. Asking Gemini for timestamps on those was loose — a "move" clip
+# showed 2-3 exercises — while the cuts themselves are exact and free to find.
+# So: find the cuts, and ask Gemini only to NAME what each shot shows.
+
+SCENE = 0.3        # ffmpeg scene-change score that counts as a cut
+MIN_SHOT = 0.8     # shorter shots are flashes/transitions, merged into a neighbour
+
+
+def shots(src: pathlib.Path) -> list[tuple[float, float]]:
+    """[(start, end)] of each shot, from ffmpeg's scene-change detection."""
+    r = subprocess.run(["ffmpeg", "-nostdin", "-hide_banner", "-i", str(src), "-an",
+                        "-vf", f"select='gt(scene,{SCENE})',showinfo", "-f", "null", "-"],
+                       capture_output=True, text=True, timeout=300)
+    cuts = [float(x) for x in re.findall(r"pts_time:([0-9.]+)", r.stderr)]
+    total = duration(src)
+    edges = [0.0] + [c for c in cuts if 0 < c < total] + [total]
+    spans = [(a, b) for a, b in zip(edges, edges[1:], strict=False) if b > a]
+    merged: list[list[float]] = []
+    for a, b in spans:
+        if merged and (b - a < MIN_SHOT or merged[-1][1] - merged[-1][0] < MIN_SHOT):
+            merged[-1][1] = b
+        else:
+            merged.append([a, b])
+    return [(round(a, 2), round(b, 2)) for a, b in merged]
+
+
+_NAME_PROMPT = (
+    "This exercise video is edited as separate shots. For EACH time range below, name "
+    "the one exercise or stretch demonstrated in it. If a range shows no exercise (talking, "
+    "title card), answer \"none\". If two ranges show the same exercise, give them the same "
+    "name. Reply with ONLY a JSON array of strings, one per range, in order.\n"
+    "Ranges (seconds):\n{ranges}")
+
+
+def name_shots(src: pathlib.Path, work: pathlib.Path, spans: list[tuple[float, float]],
+               hints: list[str] | None = None) -> list[str]:
+    ranges = "\n".join(f"{i}. {a:.1f}-{b:.1f}" for i, (a, b) in enumerate(spans, 1))
+    text = _ask_gemini(src, work, _NAME_PROMPT.format(ranges=ranges) + _hint(hints))
+    m = re.search(r"\[.*\]", text, re.S)
+    names = json.loads(m.group(0)) if m else []
+    if not isinstance(names, list) or len(names) != len(spans):
+        return [f"Move {i}" for i in range(1, len(spans) + 1)]
+    return [str(n).strip() or "none" for n in names]
+
+
+def moves_from_shots(spans: list[tuple[float, float]], names: list[str]) -> list[dict]:
+    """One move per run of shots with the same name; 'none' shots dropped.
+    The cut keeps clear of the shot edges so no frame of a neighbour leaks in."""
+    out: list[dict] = []
+    for (a, b), n in zip(spans, names, strict=True):
+        if n.lower() in ("none", "", "n/a"):
+            continue
+        if out and out[-1]["name"].lower() == n.lower() and abs(out[-1]["_end"] - a) < 0.05:
+            out[-1]["_end"] = b
+            continue
+        out.append({"name": n, "_start": a, "_end": b})
+    for m in out:
+        a, b = m.pop("_start"), m.pop("_end")
+        m["start"] = round(a + 0.1, 2)
+        m["end"] = round(min(b - 0.1, a + 8.1), 2)
+    return [m for m in out if m["end"] - m["start"] >= 0.6]
 
 
 def validate(raw, total: float) -> list[dict]:
@@ -164,7 +240,11 @@ def make_for_save(url: str, sid: str, video_path: str | None = None,
         clips = [{"name": "Whole reel", "file": f"{sid}/loop.mp4", "start": 0.0, "end": None}]
         cut(src, staged / "loop.mp4")
         try:
-            moves = find_moves(src, work, hints)
+            spans = shots(src)
+            if len(spans) >= 2:
+                moves = moves_from_shots(spans, name_shots(src, work, spans, hints))
+            else:
+                moves = find_moves(src, work, hints)  # one continuous take
         except Exception as e:  # noqa: BLE001
             log.warning("move detection failed for %s: %s", url, e)
             moves = []
