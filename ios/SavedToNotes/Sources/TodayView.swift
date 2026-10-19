@@ -32,9 +32,15 @@ struct TodayView: View {
                 }
             }
 
-            if store.saves.isEmpty {
-                EmptyState(symbol: "sparkles", title: "Nothing to do yet",
-                           hint: "Send a reel about a place, an event, a recipe, a workout or something to buy to your bot. It lands here, sorted.")
+            if store.of(.visit).isEmpty && store.of(.attend).isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Places and events show up here").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
+                    Text("In Instagram, tap Share, then Afterscroll on a café, trip or event reel.")
+                        .font(.system(size: 14)).foregroundStyle(Theme.mute)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(16)
+                .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(Theme.line, style: StrokeStyle(lineWidth: 1, dash: [4, 4])))
             }
         }
         .fullScreenCover(isPresented: $playing) { RoutinePlayer(saves: store.routine) }
@@ -53,22 +59,26 @@ struct TodayView: View {
         Card {
             Eyebrow(text: "Morning routine", color: Theme.signal)
             if r.isEmpty {
-                Text("No workouts saved yet").font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.ink)
-                Text("Save a mobility or workout reel and it becomes a looping clip here.")
-                    .font(.system(size: 13)).foregroundStyle(Theme.mute)
+                Text("No workouts saved yet").font(.system(size: 18, weight: .bold)).foregroundStyle(Theme.ink)
+                Text("Share a mobility or workout reel to Afterscroll and it becomes a looping clip here.")
+                    .font(.system(size: 14)).foregroundStyle(Theme.mute)
             } else {
-                HStack(spacing: 6) {
-                    ForEach(r.prefix(4)) { s in
-                        LoopView(save: s).frame(height: 92).clipShape(RoundedRectangle(cornerRadius: 10))
-                    }
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
+                    ForEach(r.prefix(3)) { s in ClipTile(save: s, radius: 12) }
                 }
-                Text(r.count == 1 ? r[0].name : "\(r.count) workouts")
-                    .font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.ink)
-                Text("about \(store.routineMinutes) min · \(r.compactMap { $0.details.bodyArea }.uniqued().joined(separator: ", ").ifEmpty("from your saves"))")
-                    .font(.system(size: 13)).foregroundStyle(Theme.mute)
-                PrimaryButton(label: "Start") { playing = true }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title(r)).font(.system(size: 19, weight: .bold)).foregroundStyle(Theme.ink)
+                    Text("\(r.count == 1 ? "1 workout" : "\(r.count) workouts") · about \(store.routineMinutes) min")
+                        .font(.system(size: 14)).foregroundStyle(Theme.mute)
+                }
+                WideButton(label: "Start routine") { playing = true }
             }
         }
+    }
+
+    private func title(_ r: [Save]) -> String {
+        let areas = r.compactMap { $0.details.bodyArea?.capitalized }.uniqued()
+        return areas.isEmpty ? (r.count == 1 ? r[0].name : "Your routine") : areas.prefix(2).joined(separator: " + ")
     }
 
     private func section(_ t: String) -> some View {

@@ -26,7 +26,8 @@ struct ListsView: View {
                         HStack(spacing: 12) {
                             Button { store.toggleDone(s) } label: {
                                 Image(systemName: store.isDone(s) ? "checkmark.circle.fill" : "circle")
-                                    .font(.system(size: 20)).foregroundStyle(store.isDone(s) ? Theme.ok : Theme.mute)
+                                    .font(.system(size: 22)).foregroundStyle(store.isDone(s) ? Theme.ok : Theme.mute)
+                                    .frame(width: 44, height: 44)
                             }
                             .buttonStyle(.plain)
                             .accessibilityLabel(store.isDone(s) ? "Mark as not bought" : "Mark as bought")
@@ -83,13 +84,14 @@ struct RowShell<Lead: View>: View {
         HStack(spacing: 12) {
             lead
             VStack(alignment: .leading, spacing: 3) {
-                Text(title).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(2)
-                if !sub.isEmpty { Text(sub).font(.system(size: 13)).foregroundStyle(Theme.mute).lineLimit(2) }
+                Text(title).font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(2)
+                if !sub.isEmpty { Text(sub).font(.system(size: 14)).foregroundStyle(Theme.mute).lineLimit(2) }
             }
             Spacer(minLength: 0)
             Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.line)
         }
-        .padding(.vertical, 10)
+        .frame(minHeight: 60)
+        .padding(.vertical, 6)
         .overlay(alignment: .bottom) { Rectangle().fill(Theme.hair).frame(height: 1) }
         .contentShape(Rectangle())
     }
@@ -98,8 +100,8 @@ struct RowShell<Lead: View>: View {
 struct Badge: View {
     let symbol: String
     var body: some View {
-        Image(systemName: symbol).font(.system(size: 15)).foregroundStyle(Theme.signal)
-            .frame(width: 38, height: 38)
+        Image(systemName: symbol).font(.system(size: 17)).foregroundStyle(Theme.signal)
+            .frame(width: 44, height: 44)
             .background(RoundedRectangle(cornerRadius: 10).fill(Theme.raise))
     }
 }
@@ -121,7 +123,7 @@ struct DateBadge: View {
             Text(date?.formatted(.dateTime.day()) ?? "–")
                 .font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.ink)
         }
-        .frame(width: 38, height: 38)
+        .frame(width: 44, height: 44)
         .background(RoundedRectangle(cornerRadius: 10).fill(Theme.raise))
     }
 }

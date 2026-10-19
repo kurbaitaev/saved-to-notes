@@ -9,7 +9,8 @@ import UIKit
 /// routine at 7am, never makes a sound.
 struct LoopView: View {
     let save: Save
-    var gravity: AVLayerVideoGravity = .resizeAspectFill
+    /// Aspect-fit by default: a preview must show the whole frame, never a crop.
+    var gravity: AVLayerVideoGravity = .resizeAspect
     @State private var file: URL?
 
     var body: some View {
@@ -72,10 +73,9 @@ struct Chip: View {
     var body: some View {
         Button(action: tap) {
             Text(label)
-                .font(Theme.mono(10))
-                .tracking(0.8)
-                .foregroundStyle(on ? Theme.ground : Theme.mute)
-                .padding(.horizontal, 10).padding(.vertical, 6)
+                .font(.system(size: 13, weight: on ? .semibold : .medium))
+                .foregroundStyle(on ? Theme.ground : Theme.soft)
+                .padding(.horizontal, 14).frame(minHeight: 32)
                 .background(Capsule().fill(on ? Theme.signal : .clear))
                 .overlay(Capsule().stroke(on ? .clear : Theme.line, lineWidth: 1))
         }
@@ -103,8 +103,51 @@ struct PrimaryButton: View {
             Label(label, systemImage: symbol)
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(Theme.ground)
-                .padding(.horizontal, 16).padding(.vertical, 9)
+                .padding(.horizontal, 18).frame(minHeight: 44)
                 .background(Capsule().fill(Theme.signal))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// A clip at its true 9:16 shape, so nothing is cropped at any size.
+struct ClipTile: View {
+    let save: Save
+    var radius: CGFloat = 16
+    var body: some View {
+        LoopView(save: save)
+            .aspectRatio(9 / 16, contentMode: .fit)
+            .clipShape(RoundedRectangle(cornerRadius: radius))
+    }
+}
+
+/// Wide primary action: full-width, 48 pt tall.
+struct WideButton: View {
+    let label: String
+    var symbol: String = "play.fill"
+    let tap: () -> Void
+    var body: some View {
+        Button(action: tap) {
+            Label(label, systemImage: symbol)
+                .font(.system(size: 16, weight: .bold))
+                .foregroundStyle(Theme.ground)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .background(Capsule().fill(Theme.signal))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct OutlineButton: View {
+    let label: String
+    let tap: () -> Void
+    var body: some View {
+        Button(action: tap) {
+            Text(label)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.ink)
+                .frame(maxWidth: .infinity, minHeight: 48)
+                .overlay(Capsule().stroke(Theme.line, lineWidth: 1))
         }
         .buttonStyle(.plain)
     }

@@ -10,7 +10,8 @@ enum Theme {
     static let line   = Color(red: 0.149, green: 0.173, blue: 0.192)   // #262C31
     static let hair   = Color(red: 0.118, green: 0.141, blue: 0.153)   // #1E2427
     static let ink    = Color(red: 0.914, green: 0.902, blue: 0.875)   // #E9E6DF
-    static let mute   = Color(red: 0.545, green: 0.573, blue: 0.592)   // #8B9297
+    static let mute   = Color(red: 0.604, green: 0.631, blue: 0.651)   // #9AA1A6 — 7:1 on ground
+    static let soft   = Color(red: 0.788, green: 0.804, blue: 0.816)   // #C9CDD0 — secondary body text
     static let signal = Color(red: 0.949, green: 0.757, blue: 0.306)   // #F2C14E
     static let ok     = Color(red: 0.388, green: 0.698, blue: 0.494)   // #63B27E
 
@@ -25,8 +26,8 @@ struct Eyebrow: View {
     var color: Color = Theme.mute
     var body: some View {
         Text(text.uppercased())
-            .font(Theme.mono(9.5))
-            .tracking(1.3)
+            .font(Theme.mono(11))
+            .tracking(1.5)
             .foregroundStyle(color)
     }
 }

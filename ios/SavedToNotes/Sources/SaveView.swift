@@ -11,27 +11,32 @@ struct SaveView: View {
     @Environment(\.openURL) private var openURL
     @State private var steps: [String] = []
     @State private var addingEvent = false
+    @State private var playing = false
 
     var body: some View {
         ZStack {
             Theme.ground.ignoresSafeArea()
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
-                    if save.kind == .move || save.clipURL != nil {
-                        LoopView(save: save, gravity: .resizeAspect)
-                            .frame(maxWidth: .infinity).frame(height: 360)
-                            .clipShape(RoundedRectangle(cornerRadius: 18))
-                    }
-                    Eyebrow(text: meta, color: Theme.signal)
-                    Text(save.name).font(.system(size: 26, weight: .bold)).foregroundStyle(Theme.ink)
-                        .fixedSize(horizontal: false, vertical: true)
-                    if let why = save.details.why ?? save.summary.nilIfEmpty {
-                        Text(why).font(.system(size: 16)).foregroundStyle(Theme.ink.opacity(0.85))
-                            .lineLimit(4)
+                    HStack(alignment: .top, spacing: 14) {
+                        if save.kind == .move || save.clipURL != nil {
+                            ClipTile(save: save, radius: 18).frame(width: 150)
+                        }
+                        VStack(alignment: .leading, spacing: 10) {
+                            Eyebrow(text: meta, color: Theme.signal)
+                            Text(save.name).font(.system(size: 26, weight: .heavy)).foregroundStyle(Theme.ink)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let why = save.details.why ?? save.summary.nilIfEmpty {
+                                Text(why).font(.system(size: 14)).foregroundStyle(Theme.soft).lineLimit(5)
+                            }
+                            if !save.author.isEmpty {
+                                Text("From \(save.author)").font(.system(size: 13)).foregroundStyle(Theme.mute)
+                            }
+                        }
+                        .padding(.top, 4)
                     }
                     actions
                     kindBody
-                    if !save.author.isEmpty { Eyebrow(text: "Saved from \(save.author)") }
                 }
                 .padding(18)
             }
@@ -40,6 +45,7 @@ struct SaveView: View {
         .toolbarBackground(Theme.ground, for: .navigationBar)
         .task { if save.kind == .cook { steps = await store.steps(for: save) } }
         .sheet(isPresented: $addingEvent) { EventEditor(save: save).ignoresSafeArea() }
+        .fullScreenCover(isPresented: $playing) { RoutinePlayer(saves: [save]) }
         .onAppear { if save.kind == .cook { UIApplication.shared.isIdleTimerDisabled = true } }
         .onDisappear { UIApplication.shared.isIdleTimerDisabled = false }
     }
@@ -66,20 +72,17 @@ struct SaveView: View {
                 if let u = save.details.url.flatMap(URL.init(string:)) {
                     PrimaryButton(label: "Open product", symbol: "bag") { openURL(u) }
                 }
-                Button(store.isDone(save) ? "Bought ✓" : "Mark bought") { store.toggleDone(save) }
-                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
-                    .padding(.horizontal, 14).padding(.vertical, 9).overlay(Capsule().stroke(Theme.line))
+                OutlineButton(label: store.isDone(save) ? "Bought ✓" : "Mark bought") { store.toggleDone(save) }
             case .move:
-                Button(store.inRoutine(save) ? "In routine ✓" : "Add to routine") { store.toggleRoutine(save) }
-                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
-                    .padding(.horizontal, 14).padding(.vertical, 9).overlay(Capsule().stroke(Theme.line))
+                WideButton(label: "Start") { playing = true }
+                OutlineButton(label: store.inRoutine(save) ? "In routine ✓" : "Add to routine") { store.toggleRoutine(save) }
             case .cook:
                 EmptyView()
             }
             if let src = save.source {
                 Button { openURL(src) } label: {
-                    Image(systemName: "arrow.up.right.square").font(.system(size: 16)).foregroundStyle(Theme.mute)
-                        .padding(9).overlay(Circle().stroke(Theme.line))
+                    Image(systemName: "arrow.up.right").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.soft)
+                        .frame(width: 48, height: 48).overlay(Circle().stroke(Theme.line))
                 }
                 .accessibilityLabel("Open the original post")
             }
