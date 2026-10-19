@@ -1324,7 +1324,8 @@ async def _heartbeat(bot=None) -> None:
         if bot is not None and ticks and ticks % RETRY_EVERY_MIN == 0:
             asyncio.create_task(_drain_pending(bot))
         if bot is not None:
-            asyncio.create_task(_take_inbox(bot))
+            # Notion's queue (old shortcut builds) costs an API call: once a minute.
+            asyncio.create_task(_take_inbox(bot, notion_too=True))
         ticks += 1
         await asyncio.sleep(60)
 
@@ -1336,7 +1337,19 @@ def _owner_chat() -> int | None:
     return int(first) if first.lstrip("-").isdigit() else None
 
 
-async def _take_inbox(bot) -> None:
+INBOX_EVERY_S = 3
+
+
+async def _inbox_loop(bot) -> None:
+    """Links shared from the phone used to wait up to a minute for the
+    heartbeat — 41 s of the first real save was just that wait. The app inbox
+    is a folder, so checking it every few seconds costs nothing."""
+    while True:
+        await _take_inbox(bot)
+        await asyncio.sleep(INBOX_EVERY_S)
+
+
+async def _take_inbox(bot, notion_too: bool = False) -> None:
     """Links shared from the phone (the app's share button or the shortcut, both
     via api.py) wait in the app inbox; run each through the normal pipeline,
     exactly like a Telegram message."""
@@ -1346,7 +1359,7 @@ async def _take_inbox(bot) -> None:
     links = await asyncio.to_thread(appdb.take_inbox)
     try:
         # Old shortcut builds wrote queued rows into Notion; still honoured.
-        if notion.enabled():
+        if notion_too and notion.enabled():
             links += await asyncio.to_thread(notion.inbox_take)
     except Exception as e:  # noqa: BLE001
         log.warning("notion inbox check failed: %s", e)
@@ -1419,6 +1432,7 @@ async def _resume_pending(app) -> None:
     """On startup: start the heartbeat (which also retries on a timer) and
     drain whatever was queued before the restart."""
     asyncio.create_task(_heartbeat(app.bot))
+    asyncio.create_task(_inbox_loop(app.bot))
     asyncio.create_task(_drain_pending(app.bot))  # after polling starts, don't block startup
 
 

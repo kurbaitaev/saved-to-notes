@@ -73,7 +73,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return
         if path == "/v1/saves":
-            return self._json(200, {"saves": appdb.all_saves()})
+            return self._json(200, {"saves": appdb.all_saves(), "pending": appdb.pending_count()})
         m = _CLIP.match(path)
         if m:
             return self._file(appdb.CLIPS / m.group(1) / m.group(2))

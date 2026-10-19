@@ -14,6 +14,9 @@ struct Failure: LocalizedError {
 final class Store: ObservableObject {
     @Published var saves: [Save] = []
     @Published var loading = false
+    /// Links sent from the phone that the server is still sorting.
+    @Published var pending = 0
+    private var watching = false
     @Published var error: String?
     /// Place pins, found on the phone with Apple Maps search — free, no key,
     /// and cached so each place is looked up once.
@@ -24,10 +27,28 @@ final class Store: ObservableObject {
 
     func of(_ kind: Kind) -> [Save] { saves.filter { $0.kind == kind } }
 
+    /// While something is being sorted, check every few seconds so it appears
+    /// on its own — nobody should have to pull to refresh to see a save land.
+    func watch() {
+        guard !watching else { return }
+        watching = true
+        Task {
+            var tries = 0
+            while pending > 0 && tries < 60 {
+                try? await Task.sleep(for: .seconds(4))
+                tries += 1
+                if let (s, p) = try? await client.saves() { saves = s; pending = p }
+            }
+            watching = false
+            await load()   // clips, pins and cache for whatever just arrived
+        }
+    }
+
     func load() async {
         loading = true; error = nil
-        do { saves = try await client.saves() }
+        do { (saves, pending) = try await client.saves() }
         catch { self.error = error.localizedDescription }
+        if pending > 0 { watch() }
         loading = false
         pins = local.pins
         await locatePlaces()

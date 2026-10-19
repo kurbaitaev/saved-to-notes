@@ -11,6 +11,21 @@ struct TodayView: View {
         Screen(title: "Today") {
             Eyebrow(text: Date().formatted(.dateTime.weekday(.wide).day().month(.wide)))
 
+            if store.pending > 0 {
+                HStack(spacing: 12) {
+                    ProgressView().tint(Theme.signal)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(store.pending == 1 ? "Sorting 1 save…" : "Sorting \(store.pending) saves…")
+                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
+                        Text("Usually under a minute. It appears here on its own.")
+                            .font(.system(size: 13)).foregroundStyle(Theme.mute)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(14)
+                .background(RoundedRectangle(cornerRadius: 16).fill(Theme.raise))
+            }
+
             routineCard
 
             if !upcoming.isEmpty {
@@ -70,6 +85,8 @@ struct TodayView: View {
         do {
             try await APIClient.shared.share(String(text[r]))
             pasteResult = "Saved. It'll show up here in about a minute."
+            store.pending += 1
+            store.watch()
         } catch {
             pasteResult = "Couldn't save: \(error.localizedDescription)"
         }

@@ -22,6 +22,7 @@ enum LaunchFlag {
 
 struct RootView: View {
     @EnvironmentObject var store: Store
+    @Environment(\.scenePhase) private var phase
     @State private var tab = 0
 
     var body: some View {
@@ -35,6 +36,10 @@ struct RootView: View {
         .task {
             tab = ["today", "move", "map", "lists"].firstIndex(of: LaunchFlag.value ?? "") ?? 0
             if store.saves.isEmpty { await store.load() }
+        }
+        // Coming back from Instagram after sharing: fetch at once.
+        .onChange(of: phase) { _, now in
+            if now == .active { Task { await store.load() } }
         }
     }
 }

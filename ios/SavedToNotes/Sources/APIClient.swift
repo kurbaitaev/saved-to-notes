@@ -34,11 +34,13 @@ struct APIClient {
         return r
     }
 
-    func saves() async throws -> [Save] {
+    /// Saves in the app, plus how many shared links are still being sorted.
+    func saves() async throws -> (saves: [Save], pending: Int) {
         let (data, resp) = try await URLSession.shared.data(for: request("v1/saves"))
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else { throw APIError.http(code) }
-        return try JSONDecoder().decode(SavesReply.self, from: data).saves.compactMap { $0.save(base: base!) }
+        let reply = try JSONDecoder().decode(SavesReply.self, from: data)
+        return (reply.saves.compactMap { $0.save(base: base!) }, reply.pending ?? 0)
     }
 
     /// Queue a link for the bot — used by the share button.
@@ -60,7 +62,7 @@ struct APIClient {
 
 // MARK: - Wire format (api.py / appdb.all_saves)
 
-private struct SavesReply: Decodable { let saves: [WireSave] }
+private struct SavesReply: Decodable { let saves: [WireSave]; let pending: Int? }
 
 private struct WireSave: Decodable {
     let id: String

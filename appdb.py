@@ -119,3 +119,15 @@ def take_inbox() -> list[tuple[str, str]]:
         if url.startswith(("http://", "https://")):
             out.append((url, str(d.get("note") or "").strip()))
     return out
+
+
+def pending_count() -> int:
+    """Links the phone has sent that aren't in the app yet: still in the inbox,
+    or claimed by the bot and being processed (its pending ledger)."""
+    n = len(list(INBOX.glob("*.json"))) if INBOX.exists() else 0
+    ledger_file = pathlib.Path(__file__).resolve().parent / "pending.json"
+    try:
+        n += len(json.loads(ledger_file.read_text()) or {})
+    except (OSError, ValueError):
+        pass
+    return n
