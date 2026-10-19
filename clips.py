@@ -39,8 +39,19 @@ _PROMPT = (
     "This is an exercise video. List every distinct exercise or stretch that is "
     "DEMONSTRATED on screen, in order. For each, give the time range in seconds "
     "(one decimal) of the cleanest 2-5 seconds of clear demonstration — skip intro "
-    "talk and transitions. Reply with ONLY JSON: "
+    "talk and transitions. One exercise is ONE entry: both sides, several reps or a "
+    "second camera angle of the same move are not new exercises. Reply with ONLY JSON: "
     '[{"name": "...", "start": 0.0, "end": 0.0}]')
+
+# The note-writer and Gemini used to read each reel separately and disagreed:
+# 5 noted moves vs 2 cuts on one reel, 8 vs 15 on another, so moves went
+# missing and doses never attached. Giving Gemini the note's list makes both
+# describe the same moves with the same names.
+_HINT = (
+    "\nThe written note for this video lists these exercises, in order:\n{moves}\n"
+    "Use exactly these names for the ones you find, in this order. Skip a listed one "
+    "only if it is never shown; add an unlisted one only if it is clearly a different "
+    "exercise.")
 
 
 class ClipError(Exception):
@@ -84,10 +95,14 @@ def cut(src: pathlib.Path, out: pathlib.Path, start: float = 0.0, end: float | N
     args += ["-an", "-vf", f"scale={width}:-2,fps=24", "-c:v", "libx264", "-preset", "veryfast",
              "-crf", str(crf), "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)]
     _run(args)
+    # A still for the tile, so the app shows a picture at once instead of a
+    # grey placeholder while the video downloads.
+    _run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-ss", "0.3", "-i", str(out),
+          "-frames:v", "1", "-q:v", "6", str(out.with_suffix(".jpg"))])
     return out
 
 
-def find_moves(src: pathlib.Path, work: pathlib.Path) -> list[dict]:
+def find_moves(src: pathlib.Path, work: pathlib.Path, hints: list[str] | None = None) -> list[dict]:
     """Ask Gemini where each exercise is. Returns validated [{name,start,end}]."""
     key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not key:
@@ -99,7 +114,8 @@ def find_moves(src: pathlib.Path, work: pathlib.Path) -> list[dict]:
           "-pix_fmt", "yuv420p", str(proxy)])
     body = {"contents": [{"parts": [
         {"inline_data": {"mime_type": "video/mp4", "data": base64.b64encode(proxy.read_bytes()).decode()}},
-        {"text": _PROMPT}]}],
+        {"text": _PROMPT + (_HINT.format(moves="\n".join(f"{i}. {h}" for i, h in enumerate(hints, 1)))
+                            if hints else "")}]}],
         "generationConfig": {"responseMimeType": "application/json", "temperature": 0}}
     req = urllib.request.Request(
         f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent",
@@ -133,7 +149,8 @@ def validate(raw, total: float) -> list[dict]:
     return out
 
 
-def make_for_save(url: str, sid: str, video_path: str | None = None) -> list[dict]:
+def make_for_save(url: str, sid: str, video_path: str | None = None,
+                  hints: list[str] | None = None) -> list[dict]:
     """Build the whole loop + per-move loops for one save. Returns the clip list
     for appdb.set_clips (index 0 = whole loop)."""
     work = TMP / uuid.uuid4().hex[:10]
@@ -147,7 +164,7 @@ def make_for_save(url: str, sid: str, video_path: str | None = None) -> list[dic
         clips = [{"name": "Whole reel", "file": f"{sid}/loop.mp4", "start": 0.0, "end": None}]
         cut(src, staged / "loop.mp4")
         try:
-            moves = find_moves(src, work)
+            moves = find_moves(src, work, hints)
         except Exception as e:  # noqa: BLE001
             log.warning("move detection failed for %s: %s", url, e)
             moves = []

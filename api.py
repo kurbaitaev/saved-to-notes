@@ -29,7 +29,7 @@ sys.path.insert(0, str(PROJ))
 import appdb  # noqa: E402
 
 PORT = int(os.environ.get("APP_API_PORT", "8791"))
-_CLIP = re.compile(r"^/v1/clips/([0-9a-f]{12})/((?:loop|move\d{1,2})\.mp4)$")
+_CLIP = re.compile(r"^/v1/clips/([0-9a-f]{12})/((?:loop|move\d{1,2})\.(?:mp4|jpg))$")
 
 
 def load_env() -> None:
@@ -73,7 +73,8 @@ class Handler(BaseHTTPRequestHandler):
         if not self._authed():
             return
         if path == "/v1/saves":
-            return self._json(200, {"saves": appdb.all_saves(), "pending": appdb.pending_count()})
+            return self._json(200, {"saves": appdb.all_saves(), "pending": appdb.pending_count(),
+                                    "recent": appdb.recent_shares()})
         m = _CLIP.match(path)
         if m:
             return self._file(appdb.CLIPS / m.group(1) / m.group(2))
@@ -135,7 +136,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         else:
             self.send_response(200)
-        self.send_header("Content-Type", "video/mp4")
+        self.send_header("Content-Type", "image/jpeg" if p.suffix == ".jpg" else "video/mp4")
         self.send_header("Accept-Ranges", "bytes")
         self.send_header("Content-Length", str(end - start + 1))
         self.send_header("Cache-Control", "private, max-age=31536000, immutable")

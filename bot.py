@@ -307,6 +307,8 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
         # on every message. A pointer to the saved note does the same job.
         title = cached.get("title") or cached.get("digest", "")[:80] or "this link"
         where = f" ({cached['path']})" if cached.get("path") else ""
+        if via_app:
+            appdb.share_done(url, "duplicate", "", str(cached.get("title") or ""))
         return Result(f"✅ Already saved as <b>{html.escape(title)}</b>{where}.\n"
                       "Send /force to redo it.", None, None, SAVED)
 
@@ -403,6 +405,12 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
     if notion.enabled():
         sinks.append(asyncio.to_thread(_sync_notion, obj, media, url, transcript, date_iso))
     sinks.append(asyncio.to_thread(_sync_app, obj, media, url, date_iso))
+    if media.get("via_app"):
+        # Tell the app where a shared link ended up — a tip goes to Notion, and
+        # without this the person just saw their save vanish.
+        in_app = obj.get("folder") in folders.REAL_LIFE
+        appdb.share_done(url, "app" if in_app else "notion", obj.get("folder") or "",
+                         str(obj.get("title") or ""))
     vault_rel = ""
     # A failing sink must NOT abort delivery or skip ledger.put (else the reel is
     # lost: stuck placeholder, never marked done, pending removed → no recovery).
@@ -979,6 +987,8 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
         return
     _in_flight.add(norm)
     ledger.pending_add(norm, chat_id, user_note)
+    if via_app:
+        appdb.share_started(norm)
     mid = None
     # Only a real outcome clears the retry marker. Anything unhandled leaves the
     # link queued — an exception is the case most worth recovering from, and it
@@ -1006,6 +1016,8 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
         # Anything unhandled must still close the loop — otherwise the user is
         # left watching "⏳ Working…" forever with no idea the reel died.
         log.error("processing failed for %s", url, exc_info=e)
+        if via_app:
+            appdb.share_done(norm, "failed")
         tail = ("The note itself was saved — only the message failed."
                 if release else "It stays queued and will retry — or send the link again now.")
         err = f"❌ That link broke while processing:\n{type(e).__name__}: {e}\n\n{tail}"
@@ -1153,7 +1165,8 @@ def _sync_app(obj: dict, media: dict, url: str, date_iso: str) -> str:
 
     def cut() -> None:
         try:
-            appdb.set_clips(sid, clips.make_for_save(url, sid))
+            hints = [str(m.get("name")) for m in det.get("moves") or [] if m.get("name")]
+            appdb.set_clips(sid, clips.make_for_save(url, sid, hints=hints))
         except Exception as e:  # noqa: BLE001
             # The save is in the app either way; it just shows without a loop.
             log.warning("clips for %s failed: %s", url, e)

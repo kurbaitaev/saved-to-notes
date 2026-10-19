@@ -33,6 +33,9 @@ create table if not exists clips (
   save_id text not null, idx integer not null, name text, file text not null,
   start real, end real, primary key (save_id, idx)
 );
+create table if not exists shares (
+  url text primary key, ts real, status text, category text, title text
+);
 """
 
 
@@ -45,6 +48,12 @@ def _db() -> sqlite3.Connection:
     c = sqlite3.connect(DB, timeout=10)
     c.row_factory = sqlite3.Row
     c.executescript(_SCHEMA)
+    try:
+        # Bumped on every re-cut. The phone caches clips by URL, so without it a
+        # re-cut workout kept showing the previous cut's videos.
+        c.execute("alter table clips add column version integer default 0")
+    except sqlite3.OperationalError:
+        pass  # already there
     return c
 
 
@@ -73,8 +82,9 @@ def set_clips(sid: str, clips: list[dict]) -> None:
     index 0 is the whole-reel loop, 1..n the individual moves."""
     with _db() as c:
         c.execute("delete from clips where save_id=?", (sid,))
-        c.executemany("insert into clips (save_id,idx,name,file,start,end) values (?,?,?,?,?,?)",
-                      [(sid, i, k.get("name"), k["file"], k.get("start"), k.get("end"))
+        v = int(time.time())
+        c.executemany("insert into clips (save_id,idx,name,file,start,end,version) values (?,?,?,?,?,?,?)",
+                      [(sid, i, k.get("name"), k["file"], k.get("start"), k.get("end"), v)
                        for i, k in enumerate(clips)])
         c.execute("update saves set updated=? where id=?", (time.time(), sid))
 
@@ -84,12 +94,16 @@ def all_saves() -> list[dict]:
         rows = [dict(r) for r in c.execute("select * from saves order by created desc, updated desc")]
         clips = {}
         for k in c.execute("select * from clips order by save_id, idx"):
+            q = f"?v={k['version'] or 0}"
             clips.setdefault(k["save_id"], []).append(
-                {"name": k["name"], "url": f"/v1/clips/{k['file']}", "start": k["start"], "end": k["end"]})
+                {"name": k["name"], "url": f"/v1/clips/{k['file']}{q}",
+                 "poster": f"/v1/clips/{k['file'].removesuffix('.mp4')}.jpg{q}",
+                 "start": k["start"], "end": k["end"]})
     for r in rows:
         r["details"] = json.loads(r["details"] or "{}")
         cl = clips.get(r["id"], [])
         r["loop"] = cl[0]["url"] if cl else None
+        r["poster"] = cl[0]["poster"] if cl else None
         r["moves"] = cl[1:]
     return rows
 
@@ -148,3 +162,32 @@ def pending_count() -> int:
     except (OSError, ValueError):
         pass
     return n
+
+
+# --- what happened to links shared from the phone ------------------------
+# A share that turns out to be a knowledge note goes to Notion, not the app.
+# Without this the "Sorting" card just vanished and the person never learned
+# where their save went.
+
+def share_started(url: str) -> None:
+    with _db() as c:
+        c.execute("insert into shares (url,ts,status) values (?,?,'sorting') on conflict(url) "
+                  "do update set ts=excluded.ts, status='sorting', category=null, title=null",
+                  (url, time.time()))
+
+
+def share_done(url: str, status: str, category: str = "", title: str = "") -> None:
+    """status: 'app' (in the app), 'notion' (filed as a knowledge note),
+    'duplicate' (already saved) or 'failed'."""
+    with _db() as c:
+        c.execute("insert into shares (url,ts,status,category,title) values (?,?,?,?,?) "
+                  "on conflict(url) do update set ts=excluded.ts, status=excluded.status, "
+                  "category=excluded.category, title=excluded.title",
+                  (url, time.time(), status, category, title))
+
+
+def recent_shares(hours: int = 24, limit: int = 5) -> list[dict]:
+    with _db() as c:
+        return [dict(r) for r in c.execute(
+            "select url, ts, status, category, title from shares where ts > ? "
+            "order by ts desc limit ?", (time.time() - hours * 3600, limit))]

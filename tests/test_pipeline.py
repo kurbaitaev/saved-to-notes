@@ -1194,7 +1194,7 @@ def test_app_store_keeps_only_real_life_and_drops_refiled_saves(tmp_path):
                               {"name": "Pigeon", "file": f"{sid}/move1.mp4", "start": 3.3, "end": 5.6}])
         [s] = appdb.all_saves()
         assert s["category"] == "Move" and s["details"] == {"minutes": 8}
-        assert s["loop"].endswith("/loop.mp4") and [m["name"] for m in s["moves"]] == ["Pigeon"]
+        assert s["loop"].split("?")[0].endswith("/loop.mp4") and [m["name"] for m in s["moves"]] == ["Pigeon"]
         # Re-filed out of a real-life category (the judo saves) → gone from the app.
         appdb.upsert("https://x/1", "How-to", "Hips")
         assert appdb.all_saves() == []
@@ -1298,3 +1298,27 @@ def test_links_shared_to_the_app_lean_real_life():
     assert folders.APP_HINT in bot._media_context("https://x/1", media)
     assert folders.APP_HINT not in bot.build_prompt("https://x/1", {"platform": "instagram"})
     assert folders.MOVE in folders.APP_HINT
+
+
+def test_recut_clips_get_new_urls_and_shares_report_where_they_went(tmp_path):
+    """A re-cut workout must not reuse the old URLs (the phone caches by URL and
+    kept showing the previous cut), and a share that became a Notion note must
+    say so instead of vanishing."""
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        sid = appdb.upsert("https://x/9", "Move", "Hips")
+        appdb.set_clips(sid, [{"name": "Whole reel", "file": f"{sid}/loop.mp4"}])
+        first = appdb.all_saves()[0]["loop"]
+        assert first.endswith("?v=" + first.split("?v=")[1]) and appdb.all_saves()[0]["poster"].split("?")[0].endswith("loop.jpg")
+        with patched(appdb.time, "time", lambda: 9_999_999_999.0):
+            appdb.set_clips(sid, [{"name": "Whole reel", "file": f"{sid}/loop.mp4"}])
+        assert appdb.all_saves()[0]["loop"] != first
+        appdb.share_started("https://x/tip")
+        appdb.share_done("https://x/tip", "notion", "Explainer", "Why hips matter")
+        [r] = appdb.recent_shares(hours=24 * 365 * 400)
+        assert (r["status"], r["category"], r["title"]) == ("notion", "Explainer", "Why hips matter")
+
+
+def test_move_hints_reach_gemini_prompt():
+    assert "{moves}" in clips._HINT and "Use exactly these names" in clips._HINT
