@@ -21,7 +21,7 @@ targets:
     info:
       path: SavedToNotes/Info.plist
       properties:
-        CFBundleDisplayName: Saved
+        CFBundleDisplayName: Afterscroll
         # Point at the build settings instead of hardcoding. xcodegen otherwise
         # writes a literal "1" here, which silently ignored the build number
         # release.sh passes — so the second upload would collide with the first.
@@ -38,7 +38,7 @@ targets:
         CURRENT_PROJECT_VERSION: "1"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         TARGETED_DEVICE_FAMILY: "1"
-        INFOPLIST_KEY_CFBundleDisplayName: Saved
+        INFOPLIST_KEY_CFBundleDisplayName: Afterscroll
         # xcodegen defaults the target to 'iPhone Developer', which beats the
         # project-level value. TestFlight needs the distribution identity.
         CODE_SIGN_IDENTITY: Apple Distribution
