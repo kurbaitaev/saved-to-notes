@@ -147,7 +147,7 @@ def find_moves(src: pathlib.Path, work: pathlib.Path, hints: list[str] | None = 
 # showed 2-3 exercises — while the cuts themselves are exact and free to find.
 # So: find the cuts, and ask Gemini only to NAME what each shot shows.
 
-SCENE = 0.3        # ffmpeg scene-change score that counts as a cut
+SCENE = 0.2        # ffmpeg scene-change score that counts as a cut (0.3 missed a soft cut on igor.system; 0.1-0.2 found the same set)
 MIN_SHOT = 0.8     # shorter shots are flashes/transitions, merged into a neighbour
 SPLIT_MIN = 5.0    # only a shot this long may hold more than one exercise
 
