@@ -182,4 +182,6 @@ APP_HINT = (
     f"({', '.join(REAL_LIFE)}) whenever the content plausibly fits one — a mobility or "
     f"exercise reel that shows moves is {MOVE} even if it also explains why they matter. "
     "Use a knowledge category only if nothing in it can be bought, visited, attended, "
-    "cooked or done.")
+    "cooked or done. SPEED MATTERS for these saves — the person is waiting in the app: "
+    "do NOT search the web or verify links; leave every item `verified: false` with an "
+    "empty `link` unless the post itself shows the URL.")

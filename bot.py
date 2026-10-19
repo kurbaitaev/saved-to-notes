@@ -22,6 +22,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -1143,14 +1144,24 @@ def _sync_app(obj: dict, media: dict, url: str, date_iso: str) -> str:
                        str(obj.get("description") or obj.get("summary") or ""), det, date_iso)
     if not sid or obj.get("folder") != folders.MOVE:
         return ""
-    try:
-        made = clips.make_for_save(url, sid, media.get("video_path"))
-        appdb.set_clips(sid, made)
-        return f"{len(made) - 1} move clip(s)"
-    except Exception as e:  # noqa: BLE001
-        # The save is in the app either way; it just shows without a loop.
-        log.warning("clips for %s failed: %s", url, e)
-        return "no clip"
+    # Cutting clips (fetch + Gemini + ffmpeg) took 22 s on a 15-move reel, all
+    # of it before the save could appear. Now the save shows at once and the
+    # clips arrive behind it; appdb counts the work as pending, so the app keeps
+    # refreshing until they land. The video is fetched again in the thread —
+    # the acquire step deletes its copy as soon as the note is written.
+    appdb.mark_making(sid, True)
+
+    def cut() -> None:
+        try:
+            appdb.set_clips(sid, clips.make_for_save(url, sid))
+        except Exception as e:  # noqa: BLE001
+            # The save is in the app either way; it just shows without a loop.
+            log.warning("clips for %s failed: %s", url, e)
+        finally:
+            appdb.mark_making(sid, False)
+
+    threading.Thread(target=cut, name=f"clips-{sid}", daemon=True).start()
+    return "clips on the way"
 
 
 def _sync_notion(obj: dict, media: dict, url: str, transcript: str, date_iso: str) -> str:

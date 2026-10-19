@@ -121,10 +121,27 @@ def take_inbox() -> list[tuple[str, str]]:
     return out
 
 
+MAKING = ROOT / "making"
+
+
+def mark_making(sid: str, on: bool) -> None:
+    """A workout whose clips are still being cut (see bot._sync_app)."""
+    f = MAKING / sid
+    if on:
+        MAKING.mkdir(parents=True, exist_ok=True)
+        f.touch()
+    else:
+        f.unlink(missing_ok=True)
+
+
 def pending_count() -> int:
-    """Links the phone has sent that aren't in the app yet: still in the inbox,
-    or claimed by the bot and being processed (its pending ledger)."""
+    """Work the app should wait for: links still in the inbox, links the bot is
+    processing (its pending ledger), and workouts whose clips are being cut."""
     n = len(list(INBOX.glob("*.json"))) if INBOX.exists() else 0
+    # A crashed cut must not leave the app "sorting" forever: ignore markers
+    # older than ten minutes.
+    if MAKING.exists():
+        n += sum(1 for f in MAKING.iterdir() if time.time() - f.stat().st_mtime < 600)
     ledger_file = pathlib.Path(__file__).resolve().parent / "pending.json"
     try:
         n += len(json.loads(ledger_file.read_text()) or {})
