@@ -7,6 +7,9 @@
   <key>signingStyle</key><string>manual</string>
   <key>uploadSymbols</key><true/>
   <key>provisioningProfiles</key>
-  <dict><key>com.kurbaitaev.savedtonotes</key><string>SavedToNotes App Store</string></dict>
+  <dict>
+    <key>com.kurbaitaev.savedtonotes</key><string>SavedToNotes App Store</string>
+    <key>com.kurbaitaev.savedtonotes.share</key><string>Afterscroll Share App Store</string>
+  </dict>
 </dict>
 </plist>
