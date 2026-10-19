@@ -1,4 +1,6 @@
+import CoreLocation
 import Foundation
+import MapKit
 import SwiftUI
 
 /// Carries a message a person can read. Swift needs a real Error type here;
@@ -10,107 +12,130 @@ struct Failure: LocalizedError {
 
 @MainActor
 final class Store: ObservableObject {
-    @Published var notes: [Note] = []
+    @Published var saves: [Save] = []
     @Published var loading = false
     @Published var error: String?
-    @Published var folder: String? = nil
+    /// Place pins, found on the phone with Apple Maps search — free, no key,
+    /// and cached so each place is looked up once.
+    @Published var pins: [String: CLLocationCoordinate2D] = [:]
 
     private let client = NotionClient(token: Secrets.notionToken, databaseID: Secrets.notionDatabaseID)
-    private let schedule = ReviewSchedule()
+    private let local = LocalState()
 
-    var folders: [(name: String, count: Int)] {
-        Dictionary(grouping: notes, by: \.folder)
-            .filter { !$0.key.isEmpty }
-            .map { ($0.key, $0.value.count) }
-            .sorted { $0.count > $1.count }
-    }
-
-    var visible: [Note] {
-        guard let folder else { return notes }
-        return notes.filter { $0.folder == folder }
-    }
-
-    /// Exactly one card, and only if it is actually due. A queue that can grow is
-    /// the documented failure mode for every review product: backlog, then dread,
-    /// then deletion. There is nothing to catch up on here by construction.
-    var dueToday: Note? {
-        notes.filter { $0.canReview && schedule.isDue($0) }
-            // Oldest due first, with the id as a tie-break. The tie-break is not
-            // cosmetic: without a total order the chosen card could change
-            // between rendering the question and fetching its note, which showed
-            // one note's question above another note's script.
-            .min { a, b in
-                let (x, y) = (schedule.due(for: a), schedule.due(for: b))
-                return x == y ? a.id < b.id : x < y
-            }
-    }
-
-    var reviewableCount: Int { notes.filter(\.canReview).count }
+    func of(_ kind: Kind) -> [Save] { saves.filter { $0.kind == kind } }
 
     func load() async {
         loading = true; error = nil
-        do { notes = try await client.notes() }
+        do { saves = try await client.saves() }
         catch { self.error = error.localizedDescription }
         loading = false
+        pins = local.pins
+        await locatePlaces()
+        // Pre-fetch loops so the morning routine plays offline and instantly.
+        for s in of(.move) { if let u = s.clipURL { _ = try? await ClipCache.shared.file(for: s.id, remote: u) } }
     }
 
-    func script(for note: Note) async -> Result<Script, Failure> {
-        do { return .success(try await client.script(pageID: note.id)) }
-        catch { return .failure(Failure(message: error.localizedDescription)) }
+    func steps(for save: Save) async -> [String] {
+        (try? await client.steps(pageID: save.id)) ?? []
     }
 
-    func grade(_ note: Note, recalled: Bool) {
-        schedule.record(note.id, recalled: recalled)
+    // MARK: - Things to buy: ticked off on this phone
+
+    func isDone(_ s: Save) -> Bool { local.done.contains(s.id) }
+    func toggleDone(_ s: Save) {
+        var d = local.done
+        if d.contains(s.id) { d.remove(s.id) } else { d.insert(s.id) }
+        local.done = d
         objectWillChange.send()
-        // Local schedule first so the card advances even offline; Notion is
-        // the shared ledger and a failure here must not block the next card.
-        Task { try? await client.recordReview(pageID: note.id, recalled: recalled) }
+    }
+
+    // MARK: - Morning routine: an ordered pick of Move saves
+
+    /// Defaults to every saved workout, newest first, until reordered.
+    var routine: [Save] {
+        let moves = of(.move)
+        let order = local.routine.filter { id in moves.contains { $0.id == id } }
+        guard !order.isEmpty else { return moves }
+        return order.compactMap { id in moves.first { $0.id == id } }
+    }
+    func inRoutine(_ s: Save) -> Bool { routine.contains(s) }
+    func toggleRoutine(_ s: Save) {
+        var r = routine.map(\.id)
+        if let i = r.firstIndex(of: s.id) { r.remove(at: i) } else { r.append(s.id) }
+        local.routine = r.isEmpty ? ["-"] : r   // "-" marks "deliberately empty"
+        objectWillChange.send()
+    }
+    var routineMinutes: Int {
+        routine.reduce(0) { $0 + ($1.details.minutes ?? max(1, ($1.details.moves?.count ?? 1))) }
+    }
+
+    // MARK: - Map
+
+    /// Places and events that have a findable location.
+    var mappable: [Save] { saves.filter { ($0.kind == .visit || $0.kind == .attend) && !query(for: $0).isEmpty } }
+
+    private func query(for s: Save) -> String {
+        let d = s.details
+        let parts = [d.name ?? (s.kind == .visit ? s.title : nil), d.venue, d.address, d.city, d.country]
+        return parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+    }
+
+    private func locatePlaces() async {
+        for s in mappable where pins[s.id] == nil {
+            let req = MKLocalSearch.Request()
+            req.naturalLanguageQuery = query(for: s)
+            guard let item = try? await MKLocalSearch(request: req).start().mapItems.first else { continue }
+            pins[s.id] = item.placemark.coordinate
+        }
+        local.pins = pins
     }
 }
 
-/// Fixed ladder, stored on the device. Deliberately not FSRS: the evidence says
-/// the penalty for a gap that is too *short* is far larger than for one that is
-/// too long, so precision buys almost nothing next to whether you show up.
-struct ReviewSchedule {
-    private let key = "review.due.v1"
-    private let ladder = [10, 30, 90]      // days after each successful recall
-    private let missed = 3
-    private let firstReviewAfterDays = 7
+/// Small per-phone state in UserDefaults: what's ticked off, the routine order
+/// and the place coordinates. Nothing here is precious — it can all be rebuilt.
+private struct LocalState {
+    private let d = UserDefaults.standard
 
-    private var table: [String: [String: Any]] {
-        get { UserDefaults.standard.dictionary(forKey: key) as? [String: [String: Any]] ?? [:] }
-        nonmutating set { UserDefaults.standard.set(newValue, forKey: key) }
+    var done: Set<String> {
+        get { Set(d.stringArray(forKey: "done.v1") ?? []) }
+        nonmutating set { d.set(Array(newValue), forKey: "done.v1") }
     }
-
-    /// A note becomes reviewable 7 days after it was saved — long enough that
-    /// answering is real recall rather than short-term memory.
-    ///
-    /// Never-reviewed notes derive their date from when they were saved rather
-    /// than from `Date()`. A "now minus one second" default is not a fixed point:
-    /// every read returned a different value, so sorting by it had no stable
-    /// order at all.
-    func due(for note: Note) -> Date {
-        if let row = table[note.id], let ts = row["due"] as? Double {
-            return Date(timeIntervalSince1970: ts)
+    var routine: [String] {
+        get { d.stringArray(forKey: "routine.v1") ?? [] }
+        nonmutating set { d.set(newValue, forKey: "routine.v1") }
+    }
+    var pins: [String: CLLocationCoordinate2D] {
+        get {
+            (d.dictionary(forKey: "pins.v1") as? [String: [Double]] ?? [:]).compactMapValues {
+                $0.count == 2 ? CLLocationCoordinate2D(latitude: $0[0], longitude: $0[1]) : nil
+            }
         }
-        let f = DateFormatter()
-        f.dateFormat = "yyyy-MM-dd"
-        f.timeZone = TimeZone(secondsFromGMT: 0)
-        guard let saved = f.date(from: String(note.date.prefix(10))) else { return .distantPast }
-        return saved.addingTimeInterval(Double(firstReviewAfterDays) * 86_400)
+        nonmutating set { d.set(newValue.mapValues { [$0.latitude, $0.longitude] }, forKey: "pins.v1") }
+    }
+}
+
+/// Downloads each loop once into Caches. Notion's file links expire after an
+/// hour, and a morning routine should not depend on the network.
+actor ClipCache {
+    static let shared = ClipCache()
+    private let dir: URL = {
+        let u = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("clips", isDirectory: true)
+        try? FileManager.default.createDirectory(at: u, withIntermediateDirectories: true)
+        return u
+    }()
+
+    func cached(_ id: String) -> URL? {
+        let f = dir.appendingPathComponent("\(id).mp4")
+        return FileManager.default.fileExists(atPath: f.path) ? f : nil
     }
 
-    func isDue(_ note: Note) -> Bool { due(for: note) <= Date() }
-
-    func step(_ id: String) -> Int { (table[id]?["step"] as? Int) ?? 0 }
-
-    func record(_ id: String, recalled: Bool) {
-        var t = table
-        let current = step(id)
-        let next = recalled ? min(current + 1, ladder.count) : 0
-        let days = recalled ? ladder[min(current, ladder.count - 1)] : missed
-        t[id] = ["due": Date().addingTimeInterval(Double(days) * 86_400).timeIntervalSince1970,
-                 "step": next]
-        table = t
+    func file(for id: String, remote: URL) async throws -> URL {
+        if let f = cached(id) { return f }
+        let (tmp, _) = try await URLSession.shared.download(from: remote)
+        let f = dir.appendingPathComponent("\(id).mp4")
+        try? FileManager.default.removeItem(at: f)
+        try FileManager.default.moveItem(at: tmp, to: f)
+        return f
     }
 }

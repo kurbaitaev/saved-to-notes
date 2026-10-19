@@ -1,8 +1,7 @@
 import Foundation
 
-/// Talks to Notion directly from the phone. There is deliberately no server in
-/// this app: the pipeline that *writes* notes needs yt-dlp, ffmpeg and a headless
-/// agent and stays on the Mac, but reading them needs none of that.
+/// Talks to Notion directly from the phone. The server writes every save into
+/// one database; the app reads only the real-life categories from it.
 enum NotionError: LocalizedError {
     case notConfigured
     case http(Int, String)
@@ -39,15 +38,18 @@ struct NotionClient {
         return (try JSONSerialization.jsonObject(with: data) as? [String: Any]) ?? [:]
     }
 
-    // MARK: - Notes
+    // MARK: - Saves
 
-    func notes() async throws -> [Note] {
-        var out: [Note] = []
+    func saves() async throws -> [Save] {
+        var out: [Save] = []
         var cursor: String?
-        // Notion pages at 100; the vault is past 200 notes, so paging is not optional.
+        let filter: [String: Any] = ["or": Kind.allCases.map {
+            ["property": "Category", "select": ["equals": $0.rawValue]]
+        }]
         repeat {
             var body: [String: Any] = [
                 "page_size": 100,
+                "filter": filter,
                 "sorts": [["property": "Date", "direction": "descending"]],
             ]
             if let cursor { body["start_cursor"] = cursor }
@@ -55,75 +57,49 @@ struct NotionClient {
                 URL(string: "https://api.notion.com/v1/databases/\(databaseID)/query")!,
                 method: "POST", body: body)
             for row in json["results"] as? [[String: Any]] ?? [] {
-                if let n = Self.parse(row) { out.append(n) }
+                if let s = Self.parse(row) { out.append(s) }
             }
             cursor = (json["has_more"] as? Bool == true) ? json["next_cursor"] as? String : nil
         } while cursor != nil
         return out
     }
 
-    private static func parse(_ row: [String: Any]) -> Note? {
+    private static func parse(_ row: [String: Any]) -> Save? {
         guard let id = row["id"] as? String,
-              let props = row["properties"] as? [String: Any] else { return nil }
+              let props = row["properties"] as? [String: Any],
+              let kind = Kind(rawValue: select(props["Category"])) else { return nil }
         let title = plain(props["Name"], key: "title")
         guard !title.isEmpty else { return nil }
-        return Note(
+        return Save(
             id: id,
             title: title,
-            folder: select(props["Category"]).isEmpty ? select(props["Folder"]) : select(props["Category"]),
-            topics: multiSelect(props["Topics"]),
-            summary: plain(props["Summary"]),
-            hook: plain(props["Hook / key idea"]),
+            kind: kind,
+            summary: plain(props["Hook / key idea"]).isEmpty ? plain(props["Summary"]) : plain(props["Hook / key idea"]),
             author: plain(props["Author"]),
-            platform: select(props["Platform"]),
             sourceURL: (props["Source"] as? [String: Any])?["url"] as? String ?? "",
             date: ((props["Date"] as? [String: Any])?["date"] as? [String: Any])?["start"] as? String ?? "",
-            worthRemaking: (props["Worth remaking"] as? [String: Any])?["checkbox"] as? Bool ?? false,
-            reviewQuestion: plain(props["Review question"])
+            details: Details.parse(plain(props["Details"])),
+            clipURL: fileURL(props["Clip"])
         )
     }
 
-    // MARK: - Script (the verbatim body, stored as page blocks)
+    // MARK: - Steps (a recipe's method lives in the page body as a numbered list)
 
-    func script(pageID: String) async throws -> Script {
-        var paras: [String] = []
+    func steps(pageID: String) async throws -> [String] {
+        var out: [String] = []
         var cursor: String?
         repeat {
             var comps = URLComponents(string: "https://api.notion.com/v1/blocks/\(pageID)/children")!
             comps.queryItems = [URLQueryItem(name: "page_size", value: "100")]
             if let cursor { comps.queryItems?.append(URLQueryItem(name: "start_cursor", value: cursor)) }
             let json = try await request(comps.url!, method: "GET")
-            for block in json["results"] as? [[String: Any]] ?? [] {
-                guard let type = block["type"] as? String,
-                      let inner = block[type] as? [String: Any] else { continue }
-                let text = Self.richText(inner["rich_text"])
-                if !text.isEmpty { paras.append(text) }
+            for block in json["results"] as? [[String: Any]] ?? [] where block["type"] as? String == "numbered_list_item" {
+                let text = Self.richText((block["numbered_list_item"] as? [String: Any])?["rich_text"])
+                if !text.isEmpty { out.append(text) }
             }
             cursor = (json["has_more"] as? Bool == true) ? json["next_cursor"] as? String : nil
         } while cursor != nil
-        return Script(paragraphs: paras)
-    }
-
-    // MARK: - Review answers
-
-    /// Record one answer on the note's Notion page. The counts live in Notion
-    /// rather than only on this phone so the weekly digest can read them —
-    /// and so the number nobody in this category has ever published (do people
-    /// actually remember what they saved?) accumulates somewhere durable.
-    func recordReview(pageID: String, recalled: Bool) async throws {
-        let page = try await request(URL(string: "https://api.notion.com/v1/pages/\(pageID)")!, method: "GET")
-        let props = page["properties"] as? [String: Any] ?? [:]
-        let reviews = ((props["Reviews"] as? [String: Any])?["number"] as? Int ?? 0) + 1
-        let hits = ((props["Recalled"] as? [String: Any])?["number"] as? Int ?? 0) + (recalled ? 1 : 0)
-        let today = ISO8601DateFormatter().string(from: Date()).prefix(10)
-        _ = try await request(
-            URL(string: "https://api.notion.com/v1/pages/\(pageID)")!, method: "PATCH",
-            body: ["properties": [
-                "Reviews": ["number": reviews],
-                "Recalled": ["number": hits],
-                "Last reviewed": ["date": ["start": String(today)]],
-                "Last result": ["select": ["name": recalled ? "recalled" : "missed"]],
-            ]])
+        return out
     }
 
     // MARK: - Field helpers
@@ -138,8 +114,9 @@ struct NotionClient {
     private static func select(_ any: Any?) -> String {
         ((any as? [String: Any])?["select"] as? [String: Any])?["name"] as? String ?? ""
     }
-    private static func multiSelect(_ any: Any?) -> [String] {
-        ((any as? [String: Any])?["multi_select"] as? [[String: Any]] ?? [])
-            .compactMap { $0["name"] as? String }
+    private static func fileURL(_ any: Any?) -> URL? {
+        guard let first = ((any as? [String: Any])?["files"] as? [[String: Any]])?.first else { return nil }
+        let type = first["type"] as? String ?? "file"
+        return ((first[type] as? [String: Any])?["url"] as? String).flatMap(URL.init(string:))
     }
 }

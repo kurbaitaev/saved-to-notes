@@ -1,7 +1,7 @@
 import SwiftUI
 
 @main
-struct SavedToNotesApp: App {
+struct AfterscrollApp: App {
     @StateObject private var store = Store()
     var body: some Scene {
         WindowGroup {
@@ -10,9 +10,8 @@ struct SavedToNotesApp: App {
     }
 }
 
-/// `--open review` or `--open note:<text>` jumps straight to a screen on launch.
-/// Screenshotting and checking a single view shouldn't require tapping through
-/// the whole app.
+/// `--open today|move|map|lists` jumps straight to a tab on launch, so a single
+/// screen can be screenshotted without tapping through the app.
 enum LaunchFlag {
     static var value: String? {
         let args = ProcessInfo.processInfo.arguments
@@ -27,13 +26,15 @@ struct RootView: View {
 
     var body: some View {
         TabView(selection: $tab) {
-            LibraryView().tabItem { Label("Library", systemImage: "square.stack") }.tag(0)
-            ReviewView().tabItem { Label("Review", systemImage: "questionmark.bubble") }.tag(1)
+            TodayView().tabItem { Label("Today", systemImage: "sun.max") }.tag(0)
+            MoveView().tabItem { Label("Move", systemImage: "figure.flexibility") }.tag(1)
+            MapScreen().tabItem { Label("Map", systemImage: "map") }.tag(2)
+            ListsView().tabItem { Label("Lists", systemImage: "checklist") }.tag(3)
         }
         .tint(Theme.signal)
         .task {
-            if store.notes.isEmpty { await store.load() }
-            if LaunchFlag.value?.hasPrefix("review") == true { tab = 1 }
+            tab = ["today", "move", "map", "lists"].firstIndex(of: LaunchFlag.value ?? "") ?? 0
+            if store.saves.isEmpty { await store.load() }
         }
     }
 }

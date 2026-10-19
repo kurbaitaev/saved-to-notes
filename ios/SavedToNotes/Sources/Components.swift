@@ -1,0 +1,181 @@
+import AVFoundation
+import SwiftUI
+import UIKit
+
+// MARK: - Looping clip
+
+/// A silent clip that plays on repeat — the whole point of the Move screen is
+/// following along without touching anything. Muted so a grid of them, or a
+/// routine at 7am, never makes a sound.
+struct LoopView: View {
+    let save: Save
+    var gravity: AVLayerVideoGravity = .resizeAspectFill
+    @State private var file: URL?
+
+    var body: some View {
+        ZStack {
+            Theme.raise
+            if let file {
+                LoopLayer(url: file, gravity: gravity)
+            } else {
+                Image(systemName: save.kind.symbol)
+                    .font(.system(size: 22, weight: .light))
+                    .foregroundStyle(Theme.mute)
+            }
+        }
+        .task(id: save.id) {
+            if let f = await ClipCache.shared.cached(save.id) { file = f; return }
+            if let u = save.clipURL { file = try? await ClipCache.shared.file(for: save.id, remote: u) }
+        }
+    }
+}
+
+private struct LoopLayer: UIViewRepresentable {
+    let url: URL
+    let gravity: AVLayerVideoGravity
+
+    final class PlayerView: UIView {
+        override class var layerClass: AnyClass { AVPlayerLayer.self }
+        var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+        var looper: AVPlayerLooper?
+    }
+
+    func makeUIView(context: Context) -> PlayerView {
+        let v = PlayerView()
+        let player = AVQueuePlayer()
+        player.isMuted = true
+        // Don't stop someone's music or podcast to show a silent loop.
+        try? AVAudioSession.sharedInstance().setCategory(.ambient, options: .mixWithOthers)
+        v.looper = AVPlayerLooper(player: player, templateItem: AVPlayerItem(url: url))
+        v.playerLayer.player = player
+        v.playerLayer.videoGravity = gravity
+        player.play()
+        return v
+    }
+
+    func updateUIView(_ v: PlayerView, context: Context) {
+        v.playerLayer.videoGravity = gravity
+    }
+
+    static func dismantleUIView(_ v: PlayerView, coordinator: ()) {
+        v.playerLayer.player?.pause()
+        v.looper = nil
+    }
+}
+
+// MARK: - Small pieces
+
+struct Chip: View {
+    let label: String
+    let on: Bool
+    let tap: () -> Void
+    var body: some View {
+        Button(action: tap) {
+            Text(label)
+                .font(Theme.mono(10))
+                .tracking(0.8)
+                .foregroundStyle(on ? Theme.ground : Theme.mute)
+                .padding(.horizontal, 10).padding(.vertical, 6)
+                .background(Capsule().fill(on ? Theme.signal : .clear))
+                .overlay(Capsule().stroke(on ? .clear : Theme.line, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct Card<Content: View>: View {
+    @ViewBuilder let content: Content
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) { content }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(14)
+            .background(RoundedRectangle(cornerRadius: 16).fill(Theme.raise))
+            .overlay(RoundedRectangle(cornerRadius: 16).stroke(Theme.line, lineWidth: 1))
+    }
+}
+
+struct PrimaryButton: View {
+    let label: String
+    var symbol: String = "play.fill"
+    let tap: () -> Void
+    var body: some View {
+        Button(action: tap) {
+            Label(label, systemImage: symbol)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(Theme.ground)
+                .padding(.horizontal, 16).padding(.vertical, 9)
+                .background(Capsule().fill(Theme.signal))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// What an empty screen says: what will appear here and how to get it there.
+struct EmptyState: View {
+    let symbol: String
+    let title: String
+    let hint: String
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: symbol).font(.system(size: 30, weight: .light)).foregroundStyle(Theme.mute)
+            Text(title).font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.ink)
+            Text(hint).font(.system(size: 14)).foregroundStyle(Theme.mute).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 40).padding(.horizontal, 24)
+    }
+}
+
+struct FailureView: View {
+    let message: String
+    let retry: () -> Void
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("Couldn't load your saves")
+                .font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.ink)
+            Text(message)
+                .font(.system(size: 14)).foregroundStyle(Theme.mute)
+                .multilineTextAlignment(.center)
+            Button("Try again", action: retry)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(Theme.ground)
+                .padding(.horizontal, 18).padding(.vertical, 10)
+                .background(RoundedRectangle(cornerRadius: 9).fill(Theme.signal))
+        }
+        .padding(32)
+    }
+}
+
+/// Screen scaffold: dark ground, large title, pull to refresh, load/failure states.
+struct Screen<Content: View>: View {
+    let title: String
+    @EnvironmentObject var store: Store
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        NavigationStack {
+            ZStack {
+                Theme.ground.ignoresSafeArea()
+                if store.loading && store.saves.isEmpty {
+                    ProgressView().tint(Theme.signal)
+                } else if let err = store.error, store.saves.isEmpty {
+                    FailureView(message: err) { Task { await store.load() } }
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) { content }
+                            .padding(.horizontal, 18).padding(.bottom, 30)
+                    }
+                    .refreshable { await store.load() }
+                }
+            }
+            .navigationTitle(title)
+            .toolbarBackground(Theme.ground, for: .navigationBar)
+            .navigationDestination(for: Save.self) { SaveView(save: $0) }
+        }
+    }
+}
+
+extension Save {
+    /// Opens the original reel or post.
+    var source: URL? { URL(string: sourceURL) }
+}
