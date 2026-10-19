@@ -29,18 +29,27 @@ struct MapScreen: View {
                 }
                 .mapStyle(.standard(elevation: .flat, pointsOfInterest: .excludingAll))
                 .preferredColorScheme(.dark)
+                // Frame the pins at street level. .automatic zoomed one pin to
+                // building level: no streets, no context, it looked broken.
+                .onAppear { frame() }
+                .onChange(of: pinned.map(\.id)) { _, _ in frame() }
 
                 HStack(spacing: 6) {
-                    Chip(label: "All", on: filter == nil) { filter = nil }
-                    Chip(label: "Places \(store.of(.visit).count)", on: filter == .visit) { filter = .visit }
-                    Chip(label: "Events \(store.of(.attend).count)", on: filter == .attend) { filter = .attend }
+                    // On a solid ground: over the map's street labels the
+                    // outlined chips were hard to read.
+                    Group {
+                        Chip(label: "All", on: filter == nil) { filter = nil }
+                        Chip(label: "Places \(store.of(.visit).count)", on: filter == .visit) { filter = .visit }
+                        Chip(label: "Events \(store.of(.attend).count)", on: filter == .attend) { filter = .attend }
+                    }
+                    .background(Capsule().fill(Theme.ground.opacity(0.9)))
                     Spacer()
                     Button {
                         locator.ask()
                         withAnimation { camera = .userLocation(fallback: camera) }
                     } label: {
                         Image(systemName: locator.allowed ? "location.fill" : "location")
-                            .font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.signal)
+                            .font(Theme.text(16, .semibold)).foregroundStyle(Theme.signal)
                             .frame(width: 44, height: 44)
                             .background(Circle().fill(Theme.raise))
                     }
@@ -53,29 +62,60 @@ struct MapScreen: View {
                 if pinned.isEmpty && !store.loading {
                     // Bottom, not top: up there it covered the locate-me button.
                     Card {
-                        Text("No places yet").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.ink)
+                        Text("No places yet").font(Theme.text(16, .semibold)).foregroundStyle(Theme.ink)
                         Text("In Instagram, tap Share, then Afterscroll on a café, restaurant, trip or event reel. It shows up here as a pin.")
-                            .font(.system(size: 14)).foregroundStyle(Theme.mute)
+                            .font(Theme.text(14)).foregroundStyle(Theme.mute)
                     }
                     .padding(.horizontal, 14).padding(.bottom, 8)
                 } else if let s = selected {
+                    VStack(spacing: 8) {
                     NavigationLink(value: s) {
                         Card {
                             Eyebrow(text: s.kind == .attend ? (s.details.eventDate?.formatted(.dateTime.weekday().day().month().hour().minute()) ?? "Event")
                                                             : (s.details.kind ?? "Place"), color: Theme.signal)
-                            Text(s.name).font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.ink)
+                            Text(s.name).font(Theme.text(17, .semibold)).foregroundStyle(Theme.ink)
                             if let why = s.details.why ?? s.summary.nilIfEmpty {
-                                Text(why).font(.system(size: 13)).foregroundStyle(Theme.mute).lineLimit(2)
+                                Text(why).font(Theme.text(13)).foregroundStyle(Theme.mute).lineLimit(2)
                             }
                         }
                     }
                     .buttonStyle(.plain)
+                    HStack(spacing: 8) {
+                        PrimaryButton(label: "Directions", symbol: "arrow.triangle.turn.up.right.diamond") { directions(s) }
+                        if let src = s.source {
+                            Link(destination: src) {
+                                Text("See the reel").font(Theme.text(14, .semibold)).foregroundStyle(Theme.ink)
+                                    .padding(.horizontal, 16).frame(minHeight: 44)
+                                    .overlay(Capsule().stroke(Theme.line))
+                            }
+                        }
+                        Spacer()
+                    }
+                    }
                     .padding(.horizontal, 14).padding(.bottom, 8)
                 }
             }
             .navigationDestination(for: Save.self) { SaveView(save: $0) }
             .toolbar(.hidden, for: .navigationBar)
         }
+    }
+
+    private func frame() {
+        let coords = pinned.compactMap { store.pins[$0.id] }
+        guard !coords.isEmpty else { return }
+        let lats = coords.map(\.latitude), lons = coords.map(\.longitude)
+        let center = CLLocationCoordinate2D(latitude: (lats.min()! + lats.max()!) / 2,
+                                            longitude: (lons.min()! + lons.max()!) / 2)
+        let span = MKCoordinateSpan(latitudeDelta: max(0.025, (lats.max()! - lats.min()!) * 1.6),
+                                    longitudeDelta: max(0.025, (lons.max()! - lons.min()!) * 1.6))
+        camera = .region(MKCoordinateRegion(center: center, span: span))
+    }
+
+    private func directions(_ s: Save) {
+        guard let c = store.pins[s.id] else { return }
+        let item = MKMapItem(placemark: MKPlacemark(coordinate: c))
+        item.name = s.name
+        item.openInMaps()
     }
 
     private var pinned: [Save] {

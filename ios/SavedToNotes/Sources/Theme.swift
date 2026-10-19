@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 /// The edit-suite palette: near-black ground, warm paper text, one amber signal
 /// borrowed from a level meter. Verbatim text is always monospaced — exact
@@ -16,7 +17,18 @@ enum Theme {
     static let ok     = Color(red: 0.388, green: 0.698, blue: 0.494)   // #63B27E
 
     static func mono(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
-        .system(size: size, weight: weight, design: .monospaced)
+        .system(size: scaled(size), weight: weight, design: .monospaced)
+    }
+
+    /// Text that follows the person's Text Size setting. Fixed sizes ignored it:
+    /// at the largest accessibility size only the screen titles grew. Capped
+    /// at 1.6× so cards and the player still lay out.
+    static func text(_ size: CGFloat, _ weight: Font.Weight = .regular) -> Font {
+        .system(size: scaled(size), weight: weight)
+    }
+
+    static func scaled(_ size: CGFloat) -> CGFloat {
+        min(UIFontMetrics(forTextStyle: .body).scaledValue(for: size), size * 1.6)
     }
 }
 

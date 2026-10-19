@@ -59,11 +59,11 @@ struct MoveView: View {
             Card {
                 HStack(spacing: 10) {
                     Text(initials(creator))
-                        .font(.system(size: 14, weight: .bold)).foregroundStyle(Theme.signal)
+                        .font(Theme.text(14, .bold)).foregroundStyle(Theme.signal)
                         .frame(width: 36, height: 36).background(Circle().fill(Theme.line))
                     VStack(alignment: .leading, spacing: 1) {
-                        Text(creator).font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.ink)
-                        Text(summary(saves)).font(.system(size: 13)).foregroundStyle(Theme.mute)
+                        Text(creator).font(Theme.text(16, .bold)).foregroundStyle(Theme.ink)
+                        Text(summary(saves)).font(Theme.text(13)).foregroundStyle(Theme.mute)
                     }
                 }
                 // A collage per workout: its moves, each looping on its own, under
@@ -74,10 +74,10 @@ struct MoveView: View {
                         if saves.count > 1 {
                             NavigationLink(value: s) {
                                 HStack {
-                                    Text(s.name).font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.ink)
-                                    Text("· \(steps.count) moves").font(.system(size: 13)).foregroundStyle(Theme.mute)
+                                    Text(s.name).font(Theme.text(14, .semibold)).foregroundStyle(Theme.ink)
+                                    Text("· \(steps.count) moves").font(Theme.text(13)).foregroundStyle(Theme.mute)
                                     Spacer()
-                                    Image(systemName: "chevron.right").font(.system(size: 12, weight: .semibold)).foregroundStyle(Theme.line)
+                                    Image(systemName: "chevron.right").font(Theme.text(12, .semibold)).foregroundStyle(Theme.line)
                                 }
                                 .frame(minHeight: 32)
                             }
@@ -90,13 +90,13 @@ struct MoveView: View {
                                     VStack(alignment: .leading, spacing: 4) {
                                         ClipTile(clip: st.clip, radius: 10)
                                             .overlay(alignment: .topLeading) {
-                                                Text("\(i + 1)").font(.system(size: 11, weight: .bold))
+                                                Text("\(i + 1)").font(Theme.text(11, .bold))
                                                     .foregroundStyle(i == 0 ? Theme.ground : Theme.ink)
                                                     .frame(width: 18, height: 18)
                                                     .background(Circle().fill(i == 0 ? Theme.signal : Theme.line))
                                                     .padding(5)
                                             }
-                                        Text(st.name).font(.system(size: 11)).foregroundStyle(Theme.soft).lineLimit(2)
+                                        Text(st.name).font(Theme.text(11)).foregroundStyle(Theme.soft).lineLimit(2)
                                     }
                                 }
                                 .buttonStyle(.plain)
@@ -117,15 +117,15 @@ struct MoveView: View {
                             HStack(spacing: 12) {
                                 ClipTile(save: saves[0], radius: 9).frame(width: 54)
                                 VStack(alignment: .leading, spacing: 2) {
-                                    Text(creator).font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.ink)
-                                    Text(saves[0].name).font(.system(size: 14)).foregroundStyle(Theme.mute).lineLimit(2)
+                                    Text(creator).font(Theme.text(16, .bold)).foregroundStyle(Theme.ink)
+                                    Text(saves[0].name).font(Theme.text(14)).foregroundStyle(Theme.mute).lineLimit(2)
                                 }
                                 Spacer(minLength: 0)
                             }
                         }
                         .buttonStyle(.plain)
                         Button { playing = PlayList(saves: saves) } label: {
-                            Image(systemName: "play.fill").font(.system(size: 15)).foregroundStyle(Theme.ink)
+                            Image(systemName: "play.fill").font(Theme.text(15)).foregroundStyle(Theme.ink)
                                 .frame(width: 44, height: 44).overlay(Circle().stroke(Theme.line))
                         }
                         .accessibilityLabel("Follow along with \(creator)")
@@ -135,7 +135,7 @@ struct MoveView: View {
                 }
             }
             Text("Save more reels from the same creator and they group into one follow-along set.")
-                .font(.system(size: 13)).foregroundStyle(Theme.mute)
+                .font(Theme.text(13)).foregroundStyle(Theme.mute)
         }
     }
 
@@ -180,9 +180,9 @@ private struct Tile: View {
                     }
                 }
             VStack(alignment: .leading, spacing: 2) {
-                Text(save.name).font(.system(size: 15, weight: .bold)).foregroundStyle(Theme.ink)
+                Text(save.name).font(Theme.text(15, .bold)).foregroundStyle(Theme.ink)
                     .lineLimit(2).multilineTextAlignment(.leading)
-                Text(meta).font(.system(size: 13)).foregroundStyle(Theme.mute).lineLimit(1)
+                Text(meta).font(Theme.text(13)).foregroundStyle(Theme.mute).lineLimit(1)
             }
         }
     }
@@ -209,8 +209,15 @@ struct RoutinePlayer: View {
         _step = State(initialValue: start)
     }
 
+    @State private var finished: TimeInterval?
+
     private func next() {
-        if step + 1 < steps.count { step += 1 } else { dismiss() }
+        if step + 1 < steps.count { step += 1 } else {
+            // A moment of credit at the end instead of just vanishing.
+            finished = Date().timeIntervalSince(started)
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            return
+        }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
@@ -248,7 +255,7 @@ struct RoutinePlayer: View {
                                 .font(Theme.mono(15, .medium)).foregroundStyle(Theme.ink).monospacedDigit()
                         }
                         Button { dismiss() } label: {
-                            Image(systemName: "xmark").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.soft)
+                            Image(systemName: "xmark").font(Theme.text(16, .semibold)).foregroundStyle(Theme.soft)
                                 .frame(width: 44, height: 44)
                         }
                         .accessibilityLabel("Close routine")
@@ -258,7 +265,7 @@ struct RoutinePlayer: View {
                         .overlay {
                             if s.step != nil && s.step?.clip == nil {
                                 Text("No clip for this move — follow the description below")
-                                    .font(.system(size: 14)).foregroundStyle(Theme.mute)
+                                    .font(Theme.text(14)).foregroundStyle(Theme.mute)
                                     .multilineTextAlignment(.center).padding(24)
                                     .offset(y: 40)
                             }
@@ -287,31 +294,46 @@ struct RoutinePlayer: View {
                         Eyebrow(text: "Workout \(s.workout + 1) of \(saves.count)" + (s.step == nil ? "" : " · move \(s.index + 1) of \(s.total)"),
                                 color: Theme.signal)
                         HStack(alignment: .firstTextBaseline) {
-                            Text(s.step?.name ?? s.save.name).font(.system(size: 26, weight: .heavy)).foregroundStyle(Theme.ink)
+                            Text(s.step?.name ?? s.save.name).font(Theme.text(26, .heavy)).foregroundStyle(Theme.ink)
                             Spacer(minLength: 8)
                             if let dose = s.step?.dose {
                                 Text(dose).font(Theme.mono(15, .medium)).foregroundStyle(Theme.ink).multilineTextAlignment(.trailing)
                             }
                         }
                         if let cue = s.step?.cues ?? (s.step == nil ? s.save.details.why : nil) {
-                            Text(cue).font(.system(size: 15)).foregroundStyle(Theme.soft).lineLimit(3)
+                            Text(cue).font(Theme.text(15)).foregroundStyle(Theme.soft).lineLimit(3)
                         }
                     }
                     HStack(spacing: 10) {
                         if step > 0 {
                             Button("Back") { back() }
-                                .font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.ink)
+                                .font(Theme.text(16, .semibold)).foregroundStyle(Theme.ink)
                                 .frame(width: 112, height: 56).overlay(Capsule().stroke(Theme.line))
                         }
                         Button { next() } label: {
                             Text(step + 1 < steps.count ? (steps[step + 1].workout == s.workout ? "Next move" : "Next workout") : "Done")
-                                .font(.system(size: 17, weight: .bold)).foregroundStyle(Theme.ground)
+                                .font(Theme.text(17, .bold)).foregroundStyle(Theme.ground)
                                 .frame(maxWidth: .infinity, minHeight: 56).background(Capsule().fill(Theme.signal))
                         }
                         .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal, 20).padding(.vertical, 8)
+            }
+        }
+        .overlay {
+            if let t = finished {
+                ZStack {
+                    Color.black.opacity(0.92).ignoresSafeArea()
+                    VStack(spacing: 14) {
+                        Image(systemName: "checkmark.circle.fill").font(.system(size: 64)).foregroundStyle(Theme.signal)
+                        Text("Routine done").font(Theme.text(28, .heavy)).foregroundStyle(Theme.ink)
+                        Text("\(steps.count) moves · \(Duration.seconds(t).formatted(.time(pattern: .minuteSecond)))")
+                            .font(Theme.mono(16, .medium)).foregroundStyle(Theme.soft)
+                        WideButton(label: "Close", symbol: "xmark") { dismiss() }.frame(maxWidth: 240).padding(.top, 8)
+                    }
+                    .padding(32)
+                }
             }
         }
         .onAppear { UIApplication.shared.isIdleTimerDisabled = true }
@@ -342,8 +364,8 @@ struct MovesList: View {
                         Text("\(i + 1)").font(Theme.mono(13, .medium)).foregroundStyle(Theme.signal).frame(width: 16)
                     }
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(m.name).font(.system(size: 16, weight: .bold)).foregroundStyle(Theme.ink)
-                        if let c = m.cues { Text(c).font(.system(size: 14)).foregroundStyle(Theme.mute) }
+                        Text(m.name).font(Theme.text(16, .bold)).foregroundStyle(Theme.ink)
+                        if let c = m.cues { Text(c).font(Theme.text(14)).foregroundStyle(Theme.mute) }
                         if let d = m.dose { Text(d).font(Theme.mono(12, .medium)).foregroundStyle(Theme.signal) }
                     }
                     Spacer(minLength: 0)

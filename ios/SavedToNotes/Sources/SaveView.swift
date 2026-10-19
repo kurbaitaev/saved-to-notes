@@ -10,6 +10,8 @@ struct SaveView: View {
     @EnvironmentObject var store: Store
     @Environment(\.openURL) private var openURL
     @State private var steps: [String] = []
+    /// Ticked ingredients and steps while cooking (this visit only).
+    @State private var ticked: Set<String> = []
     @State private var addingEvent = false
     /// The move to open the player at. One value, not a flag plus an index:
     /// with two, the player was built before the index landed and always
@@ -27,13 +29,13 @@ struct SaveView: View {
                         }
                         VStack(alignment: .leading, spacing: 10) {
                             Eyebrow(text: meta, color: Theme.signal)
-                            Text(save.name).font(.system(size: 26, weight: .heavy)).foregroundStyle(Theme.ink)
+                            Text(save.name).font(Theme.text(26, .heavy)).foregroundStyle(Theme.ink)
                                 .fixedSize(horizontal: false, vertical: true)
                             if let why = save.details.why ?? save.summary.nilIfEmpty {
-                                Text(why).font(.system(size: 14)).foregroundStyle(Theme.soft).lineLimit(5)
+                                Text(why).font(Theme.text(14)).foregroundStyle(Theme.soft).lineLimit(5)
                             }
                             if !save.author.isEmpty {
-                                Text("From \(save.author)").font(.system(size: 13)).foregroundStyle(Theme.mute)
+                                Text("From \(save.author)").font(Theme.text(13)).foregroundStyle(Theme.mute)
                             }
                         }
                         .padding(.top, 4)
@@ -84,7 +86,7 @@ struct SaveView: View {
             }
             if let src = save.source {
                 Button { openURL(src) } label: {
-                    Image(systemName: "arrow.up.right").font(.system(size: 16, weight: .semibold)).foregroundStyle(Theme.soft)
+                    Image(systemName: "arrow.up.right").font(Theme.text(16, .semibold)).foregroundStyle(Theme.soft)
                         .frame(width: 48, height: 48).overlay(Circle().stroke(Theme.line))
                 }
                 .accessibilityLabel("Open the original post")
@@ -100,20 +102,11 @@ struct SaveView: View {
         case .cook:
             if let ing = d.ingredients, !ing.isEmpty {
                 section("Ingredients")
-                ForEach(ing, id: \.self) { i in
-                    Label(i, systemImage: "circle.fill").labelStyle(Dot()).padding(.vertical, 2)
-                }
+                ForEach(ing, id: \.self) { i in tick("i:" + i, i) }
             }
             if !steps.isEmpty {
                 section("Method")
-                ForEach(Array(steps.enumerated()), id: \.offset) { n, s in
-                    HStack(alignment: .firstTextBaseline, spacing: 12) {
-                        Text("\(n + 1)").font(Theme.mono(14, .medium)).foregroundStyle(Theme.signal)
-                        Text(s).font(.system(size: 18)).foregroundStyle(Theme.ink)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    .padding(.vertical, 6)
-                }
+                ForEach(Array(steps.enumerated()), id: \.offset) { n, s in tick("s:\(n)", s, number: n + 1) }
             }
         case .visit, .attend:
             if !d.whereLine.isEmpty { section("Where"); Text(d.whereLine).foregroundStyle(Theme.ink) }
@@ -126,6 +119,27 @@ struct SaveView: View {
     }
 
     private func section(_ t: String) -> some View { Eyebrow(text: t).padding(.top, 8) }
+
+    /// A line you can tick off while cooking — the hands are busy, so the
+    /// whole row is the target.
+    private func tick(_ key: String, _ text: String, number: Int? = nil) -> some View {
+        let done = ticked.contains(key)
+        return Button {
+            if done { ticked.remove(key) } else { ticked.insert(key) }
+        } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Image(systemName: done ? "checkmark.circle.fill" : (number == nil ? "circle" : "\(number!).circle"))
+                    .font(Theme.text(number == nil ? 18 : 20)).foregroundStyle(done ? Theme.ok : Theme.signal)
+                Text(text).font(Theme.text(number == nil ? 17 : 19)).foregroundStyle(done ? Theme.mute : Theme.ink)
+                    .strikethrough(done, color: Theme.mute)
+                    .multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 8).contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(done ? "Done" : "Not done")
+    }
 
     private func directions() {
         if let c = store.pins[save.id] {
@@ -140,14 +154,6 @@ struct SaveView: View {
     }
 }
 
-private struct Dot: LabelStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Circle().fill(Theme.signal).frame(width: 5, height: 5).alignmentGuide(.firstTextBaseline) { $0[.bottom] - 1 }
-            configuration.title.font(.system(size: 16)).foregroundStyle(Theme.ink)
-        }
-    }
-}
 
 /// The system's own event editor, pre-filled. Since iOS 17 presenting it needs
 /// no calendar permission: the person adds the event themselves.

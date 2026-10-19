@@ -14,6 +14,8 @@ struct Failure: LocalizedError {
 final class Store: ObservableObject {
     @Published var saves: [Save] = []
     @Published var loading = false
+    /// True when the server couldn't be reached and the last copy is shown.
+    @Published var offline = false
     /// Links sent from the phone that the server is still sorting.
     @Published var pending = 0
     /// Links shared from the phone in the last day, and where each went.
@@ -48,8 +50,16 @@ final class Store: ObservableObject {
 
     func load() async {
         loading = true; error = nil
-        do { (saves, pending, recent) = try await client.saves() }
-        catch { self.error = error.localizedDescription }
+        if saves.isEmpty, let kept = client.lastCopy() { saves = kept }   // instant start
+        do {
+            (saves, pending, recent) = try await client.saves()
+            offline = false
+        } catch {
+            // Keep showing what we have. Only an empty app shows the error.
+            if saves.isEmpty, let kept = client.lastCopy() { saves = kept }
+            offline = !saves.isEmpty
+            if saves.isEmpty { self.error = error.localizedDescription }
+        }
         if pending > 0 { watch() }
         loading = false
         pins = local.pins
@@ -78,17 +88,17 @@ final class Store: ObservableObject {
 
     // MARK: - Morning routine: an ordered pick of Move saves
 
-    /// Until edited: the newest workouts that fit in about a quarter of an
-    /// hour (it was every workout — 34 minutes is not a morning routine).
-    /// Once edited, exactly the person's pick, even if they emptied it.
+    /// Until edited: newest workouts first, filled to at least ~10 minutes and
+    /// never past ~20 (it was every workout, 34 min; then a cap that stopped at
+    /// a single 3-minute one). Once edited, exactly the person's pick.
     var routine: [Save] {
         let moves = of(.move)
         let stored = local.routine
         guard !stored.isEmpty else {
             var pick: [Save] = [], total = 0
-            for s in moves where pick.count < 3 {
+            for s in moves where total < 10 && pick.count < 4 {
                 let m = Self.minutes(s)
-                if !pick.isEmpty && total + m > 15 { break }
+                if !pick.isEmpty && total + m > 20 { continue }   // too long: try a shorter one
                 pick.append(s); total += m
             }
             return pick
@@ -111,20 +121,31 @@ final class Store: ObservableObject {
     // MARK: - Map
 
     /// Places and events that have a findable location.
-    var mappable: [Save] { saves.filter { ($0.kind == .visit || $0.kind == .attend) && !query(for: $0).isEmpty } }
+    var mappable: [Save] { saves.filter { ($0.kind == .visit || $0.kind == .attend) && !queries(for: $0).isEmpty } }
 
-    private func query(for s: Save) -> String {
+    /// What to search for, most specific first. An event is found by its VENUE
+    /// — searching "Founders Meetup, Frontier Tower…" found nothing, so the
+    /// event never got a pin.
+    private func queries(for s: Save) -> [String] {
         let d = s.details
-        let parts = [d.name ?? (s.kind == .visit ? s.title : nil), d.venue, d.address, d.city, d.country]
-        return parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ")
+        let join = { (parts: [String?]) in parts.compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", ") }
+        let name = (d.name ?? s.title).replacingOccurrences(of: "[TEST] ", with: "")
+        let tries = s.kind == .attend
+            ? [join([d.venue, d.address, d.city]), join([d.venue, d.city]), join([d.address, d.city])]
+            : [join([name, d.address, d.city]), join([name, d.city]), join([d.address, d.city])]
+        return tries.filter { $0.contains(",") }.uniqued()
     }
 
     private func locatePlaces() async {
         for s in mappable where pins[s.id] == nil {
-            let req = MKLocalSearch.Request()
-            req.naturalLanguageQuery = query(for: s)
-            guard let item = try? await MKLocalSearch(request: req).start().mapItems.first else { continue }
-            pins[s.id] = item.placemark.coordinate
+            for q in queries(for: s) {
+                let req = MKLocalSearch.Request()
+                req.naturalLanguageQuery = q
+                if let item = try? await MKLocalSearch(request: req).start().mapItems.first {
+                    pins[s.id] = item.placemark.coordinate
+                    break
+                }
+            }
         }
         local.pins = pins
     }

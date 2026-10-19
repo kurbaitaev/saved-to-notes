@@ -16,9 +16,9 @@ struct TodayView: View {
                     ProgressView().tint(Theme.signal)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(store.pending == 1 ? "Sorting 1 save…" : "Sorting \(store.pending) saves…")
-                            .font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
+                            .font(Theme.text(15, .semibold)).foregroundStyle(Theme.ink)
                         Text("Usually under a minute. It appears here on its own.")
-                            .font(.system(size: 13)).foregroundStyle(Theme.mute)
+                            .font(Theme.text(13)).foregroundStyle(Theme.mute)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -52,9 +52,9 @@ struct TodayView: View {
 
             if store.of(.visit).isEmpty && store.of(.attend).isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Places and events show up here").font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink)
+                    Text("Places and events show up here").font(Theme.text(15, .semibold)).foregroundStyle(Theme.ink)
                     Text("In Instagram, tap Share, then Afterscroll on a café, trip or event reel.")
-                        .font(.system(size: 14)).foregroundStyle(Theme.mute)
+                        .font(Theme.text(14)).foregroundStyle(Theme.mute)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
@@ -63,32 +63,39 @@ struct TodayView: View {
         }
         .fullScreenCover(isPresented: $playing) { RoutinePlayer(saves: store.routine) }
         .overlay(alignment: .topTrailing) {
-            // Fallback for apps whose share sheet doesn't pass a link: copy
-            // the link there, tap this here.
-            Button { Task { await pasteLink() } } label: {
-                Label("Paste link", systemImage: "doc.on.clipboard")
-                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.signal)
-                    .padding(.horizontal, 14).frame(minHeight: 44)
-                    .background(Capsule().fill(Theme.raise))
+            // The system Paste button: reading the clipboard from a normal
+            // button made iOS ask "Allow Paste?" every single time.
+            PasteButton(payloadType: String.self) { strings in
+                Task { await share(strings.joined(separator: " ")) }
             }
+            .labelStyle(.titleAndIcon)
+            .buttonBorderShape(.capsule)
+            .tint(Theme.signal)
             .padding(.trailing, 16).padding(.top, 4)
         }
+        .task { if LaunchFlag.value == "paste" { await pasteLink() } }   // UI tests
         .alert(pasteResult ?? "", isPresented: Binding(get: { pasteResult != nil }, set: { if !$0 { pasteResult = nil } })) {
             Button("OK", role: .cancel) {}
         }
     }
 
+    /// UI tests only (--open paste): the same path, reading the clipboard directly.
     private func pasteLink() async {
-        guard let text = UIPasteboard.general.string,
-              let r = text.range(of: #"https?://\S+"#, options: .regularExpression) else {
+        await share(UIPasteboard.general.string ?? "")
+    }
+
+    private func share(_ text: String) async {
+        guard let r = text.range(of: #"https?://\S+"#, options: .regularExpression) else {
             pasteResult = "No link on the clipboard. In Instagram tap Share, then Copy link, and try again."
             return
         }
         do {
             try await APIClient.shared.share(String(text[r]))
-            pasteResult = "Saved. It'll show up here in about a minute."
+            // No "Saved!" pop-up: the Sorting card appears now, and Just saved
+            // then says what really happened (in the app, Notion, duplicate).
             store.pending += 1
             store.watch()
+            UINotificationFeedbackGenerator().notificationOccurred(.success)
         } catch {
             pasteResult = "Couldn't save: \(error.localizedDescription)"
         }
@@ -107,17 +114,17 @@ struct TodayView: View {
         Card {
             Eyebrow(text: "Morning routine", color: Theme.signal)
             if r.isEmpty {
-                Text("No workouts saved yet").font(.system(size: 18, weight: .bold)).foregroundStyle(Theme.ink)
+                Text("No workouts saved yet").font(Theme.text(18, .bold)).foregroundStyle(Theme.ink)
                 Text("Share a mobility or workout reel to Afterscroll and it becomes a looping clip here.")
-                    .font(.system(size: 14)).foregroundStyle(Theme.mute)
+                    .font(Theme.text(14)).foregroundStyle(Theme.mute)
             } else {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 8), count: 3), spacing: 8) {
                     ForEach(r.prefix(3)) { s in ClipTile(save: s, radius: 12) }
                 }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(title(r)).font(.system(size: 19, weight: .bold)).foregroundStyle(Theme.ink)
+                    Text(title(r)).font(Theme.text(19, .bold)).foregroundStyle(Theme.ink)
                     Text("\(r.count == 1 ? "1 workout" : "\(r.count) workouts") · about \(store.routineMinutes) min")
-                        .font(.system(size: 14)).foregroundStyle(Theme.mute)
+                        .font(Theme.text(14)).foregroundStyle(Theme.mute)
                 }
                 WideButton(label: "Start routine") { playing = true }
             }
@@ -133,11 +140,11 @@ struct TodayView: View {
             ForEach(Array(done), id: \.self) { r in
                 let save = store.saves.first { $0.sourceURL.hasPrefix(r.url) || r.url.hasPrefix($0.sourceURL) }
                 let row = HStack(spacing: 10) {
-                    Image(systemName: icon(r)).font(.system(size: 15)).foregroundStyle(r.status == "failed" ? .red : Theme.signal)
+                    Image(systemName: icon(r)).font(Theme.text(15)).foregroundStyle(r.status == "failed" ? .red : Theme.signal)
                         .frame(width: 24)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(r.title?.nilIfEmpty ?? r.url).font(.system(size: 15, weight: .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
-                        Text(where_(r)).font(.system(size: 13)).foregroundStyle(Theme.mute)
+                        Text(r.title?.nilIfEmpty ?? r.url).font(Theme.text(15, .semibold)).foregroundStyle(Theme.ink).lineLimit(1)
+                        Text(where_(r)).font(Theme.text(13)).foregroundStyle(Theme.mute)
                     }
                     Spacer(minLength: 0)
                 }

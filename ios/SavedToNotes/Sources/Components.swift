@@ -33,7 +33,7 @@ struct LoopView: View {
                 Image(uiImage: still).resizable().aspectRatio(contentMode: .fit)
             } else {
                 Image(systemName: symbol)
-                    .font(.system(size: 22, weight: .light))
+                    .font(Theme.text(22, .light))
                     .foregroundStyle(Theme.mute)
             }
         }
@@ -91,7 +91,7 @@ struct Chip: View {
     var body: some View {
         Button(action: tap) {
             Text(label)
-                .font(.system(size: 13, weight: on ? .semibold : .medium))
+                .font(Theme.text(13, on ? .semibold : .medium))
                 .foregroundStyle(on ? Theme.ground : Theme.soft)
                 .padding(.horizontal, 14).frame(minHeight: 32)
                 .background(Capsule().fill(on ? Theme.signal : .clear))
@@ -119,7 +119,7 @@ struct PrimaryButton: View {
     var body: some View {
         Button(action: tap) {
             Label(label, systemImage: symbol)
-                .font(.system(size: 14, weight: .semibold))
+                .font(Theme.text(14, .semibold))
                 .foregroundStyle(Theme.ground)
                 .padding(.horizontal, 18).frame(minHeight: 44)
                 .background(Capsule().fill(Theme.signal))
@@ -149,7 +149,7 @@ struct WideButton: View {
     var body: some View {
         Button(action: tap) {
             Label(label, systemImage: symbol)
-                .font(.system(size: 16, weight: .bold))
+                .font(Theme.text(16, .bold))
                 .foregroundStyle(Theme.ground)
                 .frame(maxWidth: .infinity, minHeight: 48)
                 .background(Capsule().fill(Theme.signal))
@@ -164,7 +164,7 @@ struct OutlineButton: View {
     var body: some View {
         Button(action: tap) {
             Text(label)
-                .font(.system(size: 15, weight: .semibold))
+                .font(Theme.text(15, .semibold))
                 .foregroundStyle(Theme.ink)
                 .frame(maxWidth: .infinity, minHeight: 48)
                 .overlay(Capsule().stroke(Theme.line, lineWidth: 1))
@@ -180,9 +180,9 @@ struct EmptyState: View {
     let hint: String
     var body: some View {
         VStack(spacing: 10) {
-            Image(systemName: symbol).font(.system(size: 30, weight: .light)).foregroundStyle(Theme.mute)
-            Text(title).font(.system(size: 17, weight: .semibold)).foregroundStyle(Theme.ink)
-            Text(hint).font(.system(size: 14)).foregroundStyle(Theme.mute).multilineTextAlignment(.center)
+            Image(systemName: symbol).font(Theme.text(30, .light)).foregroundStyle(Theme.mute)
+            Text(title).font(Theme.text(17, .semibold)).foregroundStyle(Theme.ink)
+            Text(hint).font(Theme.text(14)).foregroundStyle(Theme.mute).multilineTextAlignment(.center)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 40).padding(.horizontal, 24)
@@ -195,12 +195,12 @@ struct FailureView: View {
     var body: some View {
         VStack(spacing: 14) {
             Text("Couldn't load your saves")
-                .font(.system(size: 18, weight: .semibold)).foregroundStyle(Theme.ink)
+                .font(Theme.text(18, .semibold)).foregroundStyle(Theme.ink)
             Text(message)
-                .font(.system(size: 14)).foregroundStyle(Theme.mute)
+                .font(Theme.text(14)).foregroundStyle(Theme.mute)
                 .multilineTextAlignment(.center)
             Button("Try again", action: retry)
-                .font(.system(size: 15, weight: .semibold))
+                .font(Theme.text(15, .semibold))
                 .foregroundStyle(Theme.ground)
                 .padding(.horizontal, 18).padding(.vertical, 10)
                 .background(RoundedRectangle(cornerRadius: 9).fill(Theme.signal))
@@ -225,7 +225,16 @@ struct Screen<Content: View>: View {
                     FailureView(message: err) { Task { await store.load() } }
                 } else {
                     ScrollView {
-                        VStack(alignment: .leading, spacing: 14) { content }
+                        VStack(alignment: .leading, spacing: 14) {
+                            if store.offline {
+                                Label("Offline — showing your saves from last time. Clips you've opened still play.",
+                                      systemImage: "wifi.slash")
+                                    .font(Theme.text(13)).foregroundStyle(Theme.mute)
+                                    .padding(10).frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(RoundedRectangle(cornerRadius: 10).fill(Theme.raise))
+                            }
+                            content
+                        }
                             .padding(.horizontal, 18).padding(.bottom, 30)
                     }
                     .refreshable { await store.load() }

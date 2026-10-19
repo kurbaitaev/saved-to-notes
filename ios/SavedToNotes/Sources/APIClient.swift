@@ -11,7 +11,7 @@ enum APIError: LocalizedError {
         switch self {
         case .notConfigured: "The app has no server token yet. Run ios/configure.sh and rebuild."
         case .http(401): "The server rejected the app's token. Copy APP_TOKEN from the server's .env and rebuild."
-        case .http(let code): "The server returned \(code)."
+        case .http: "Your saves server didn't answer. Check your connection and try again."
         }
     }
 }
@@ -39,8 +39,28 @@ struct APIClient {
         let (data, resp) = try await URLSession.shared.data(for: request("v1/saves"))
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard code == 200 else { throw APIError.http(code) }
+        let out = try decode(data)
+        Self.keep(data)   // the last good copy, for when the server can't be reached
+        return out
+    }
+
+    func decode(_ data: Data) throws -> (saves: [Save], pending: Int, recent: [Share]) {
         let reply = try JSONDecoder().decode(SavesReply.self, from: data)
         return (reply.saves.compactMap { $0.save(base: base!) }, reply.pending ?? 0, reply.recent ?? [])
+    }
+
+    private static let copy = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("saves.json")
+
+    private static func keep(_ data: Data) {
+        try? FileManager.default.createDirectory(at: copy.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: copy, options: .atomic)
+    }
+
+    /// The saves as last seen, so a gym with no signal still has the routine.
+    func lastCopy() -> [Save]? {
+        guard let data = try? Data(contentsOf: Self.copy), let out = try? decode(data) else { return nil }
+        return out.saves
     }
 
     /// Queue a link for the bot — used by the share button.
