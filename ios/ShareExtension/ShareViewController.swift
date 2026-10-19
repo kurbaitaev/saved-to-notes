@@ -28,6 +28,7 @@ final class ShareViewController: UIViewController {
 
     private func send() async {
         guard let link = await sharedLink() else {
+            await report()
             model.state = .failed("No link found in what was shared. Copy the link instead and tap Paste link in the app.")
             return
         }
@@ -37,6 +38,7 @@ final class ShareViewController: UIViewController {
             try? await Task.sleep(for: .seconds(1.2))
             finish()
         } catch {
+            await report(error.localizedDescription)
             model.state = .failed(error.localizedDescription)
         }
     }
@@ -59,6 +61,31 @@ final class ShareViewController: UIViewController {
             if let t = i.attributedContentText?.string, let link = Self.link(in: t) { return link }
         }
         return nil
+    }
+
+    /// Tell the server what the other app handed over (types and a short
+    /// sample), so a share that finds no link can be diagnosed.
+    private func report(_ error: String = "no link") async {
+        let items = extensionContext?.inputItems as? [NSExtensionItem] ?? []
+        var parts: [String] = ["error: \(error)"]
+        for (i, item) in items.enumerated() {
+            if let t = item.attributedContentText?.string { parts.append("item\(i) text: \(t.prefix(200))") }
+            for p in item.attachments ?? [] {
+                var line = "item\(i) types: \(p.registeredTypeIdentifiers.joined(separator: ","))"
+                if let id = p.registeredTypeIdentifiers.first,
+                   let v = try? await p.loadItem(forTypeIdentifier: id) {
+                    line += " sample: \(String(describing: v).prefix(200))"
+                }
+                parts.append(line)
+            }
+        }
+        guard let base = URL(string: Secrets.apiBase) else { return }
+        var r = URLRequest(url: base.appendingPathComponent("v1/report"))
+        r.httpMethod = "POST"
+        r.timeoutInterval = 10
+        r.setValue("Bearer \(Secrets.apiToken)", forHTTPHeaderField: "Authorization")
+        r.httpBody = parts.joined(separator: " | ").data(using: .utf8)
+        _ = try? await URLSession.shared.data(for: r)
     }
 
     static func link(in item: Any) -> String? {

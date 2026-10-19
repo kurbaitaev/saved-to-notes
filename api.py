@@ -80,10 +80,18 @@ class Handler(BaseHTTPRequestHandler):
         self._json(404, {"error": "not found"})
 
     def do_POST(self):  # noqa: N802
-        if self.path.split("?")[0] != "/v1/save":
+        path = self.path.split("?")[0]
+        if path not in ("/v1/save", "/v1/report"):
             return self._json(404, {"error": "not found"})
         if not self._authed():
             return
+        if path == "/v1/report":
+            # The share button calls this when it can't find a link, saying
+            # what the other app actually handed over — the only way to see
+            # inside another app's share sheet.
+            n = min(int(self.headers.get("Content-Length", "0")), 8_000)
+            sys.stderr.write(f"  share report: {self.rfile.read(n).decode('utf-8', 'replace')[:2000]}\n")
+            return self._json(204, {})
         try:
             n = min(int(self.headers.get("Content-Length", "0")), 64_000)
             d = json.loads(self.rfile.read(n) or b"{}")
