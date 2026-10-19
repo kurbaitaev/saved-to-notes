@@ -5,6 +5,7 @@ import SwiftUI
 struct TodayView: View {
     @EnvironmentObject var store: Store
     @State private var playing = false
+    @State private var pasteResult: String?
 
     var body: some View {
         Screen(title: "Today") {
@@ -44,6 +45,34 @@ struct TodayView: View {
             }
         }
         .fullScreenCover(isPresented: $playing) { RoutinePlayer(saves: store.routine) }
+        .overlay(alignment: .topTrailing) {
+            // Fallback for apps whose share sheet doesn't pass a link: copy
+            // the link there, tap this here.
+            Button { Task { await pasteLink() } } label: {
+                Label("Paste link", systemImage: "doc.on.clipboard")
+                    .font(.system(size: 14, weight: .semibold)).foregroundStyle(Theme.signal)
+                    .padding(.horizontal, 14).frame(minHeight: 44)
+                    .background(Capsule().fill(Theme.raise))
+            }
+            .padding(.trailing, 16).padding(.top, 4)
+        }
+        .alert(pasteResult ?? "", isPresented: Binding(get: { pasteResult != nil }, set: { if !$0 { pasteResult = nil } })) {
+            Button("OK", role: .cancel) {}
+        }
+    }
+
+    private func pasteLink() async {
+        guard let text = UIPasteboard.general.string,
+              let r = text.range(of: #"https?://\S+"#, options: .regularExpression) else {
+            pasteResult = "No link on the clipboard. In Instagram tap Share, then Copy link, and try again."
+            return
+        }
+        do {
+            try await APIClient.shared.share(String(text[r]))
+            pasteResult = "Saved. It'll show up here in about a minute."
+        } catch {
+            pasteResult = "Couldn't save: \(error.localizedDescription)"
+        }
     }
 
     private var upcoming: [Save] {

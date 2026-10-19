@@ -28,7 +28,7 @@ final class ShareViewController: UIViewController {
 
     private func send() async {
         guard let link = await sharedLink() else {
-            model.state = .failed("No link in what you shared.")
+            model.state = .failed("No link found in what was shared. Copy the link instead and tap Paste link in the app.")
             return
         }
         do {
@@ -41,21 +41,37 @@ final class ShareViewController: UIViewController {
         }
     }
 
-    /// The first URL among the shared items — as a URL, or inside shared text
-    /// (Instagram shares "caption + link" as text in some versions).
+    /// The first web link among the shared items. Apps hand it over in
+    /// different shapes — a URL object, a string, raw data, or only inside the
+    /// shared text ("caption + link") — so every shape is tried.
     private func sharedLink() async -> String? {
-        let providers = (extensionContext?.inputItems as? [NSExtensionItem] ?? []).flatMap { $0.attachments ?? [] }
-        for p in providers where p.hasItemConformingToTypeIdentifier(UTType.url.identifier) {
-            if let url = try? await p.loadItem(forTypeIdentifier: UTType.url.identifier) as? URL,
-               url.scheme?.hasPrefix("http") == true { return url.absoluteString }
-        }
-        for p in providers where p.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) {
-            if let text = try? await p.loadItem(forTypeIdentifier: UTType.plainText.identifier) as? String,
-               let r = text.range(of: #"https?://\S+"#, options: .regularExpression) {
-                return String(text[r])
+        let items = extensionContext?.inputItems as? [NSExtensionItem] ?? []
+        let providers = items.flatMap { $0.attachments ?? [] }
+        let types = [UTType.url, .plainText, .text, .data].map(\.identifier)
+        for type in types {
+            for p in providers where p.hasItemConformingToTypeIdentifier(type) {
+                guard let item = try? await p.loadItem(forTypeIdentifier: type) else { continue }
+                if let link = Self.link(in: item) { return link }
             }
         }
+        // Last resort: the text the app attached to the share itself.
+        for i in items {
+            if let t = i.attributedContentText?.string, let link = Self.link(in: t) { return link }
+        }
         return nil
+    }
+
+    static func link(in item: Any) -> String? {
+        let text: String?
+        switch item {
+        case let u as URL: text = u.absoluteString
+        case let s as String: text = s
+        case let a as NSAttributedString: text = a.string
+        case let d as Data: text = String(data: d, encoding: .utf8)
+        default: text = nil
+        }
+        guard let text, let r = text.range(of: #"https?://[^\s"'<>]+"#, options: .regularExpression) else { return nil }
+        return String(text[r])
     }
 
     private func post(_ link: String) async throws {
