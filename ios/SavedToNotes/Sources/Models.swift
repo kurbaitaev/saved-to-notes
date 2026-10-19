@@ -148,24 +148,22 @@ struct Step: Hashable {
 }
 
 extension Save {
-    /// Every move the note lists, each with its own clip when Gemini found it
-    /// (the cuts reuse the note's names), else the whole reel. The two used to
-    /// disagree — 2 cuts for 5 noted moves — and the app showed only the cuts,
-    /// silently dropping three moves and every dose. Cuts the note doesn't
-    /// mention are kept too, after the noted ones.
+    /// The moves in the VIDEO's order (a follow-along must match the reel),
+    /// each cut with the note's dose and cue attached when the names match.
+    /// Noted moves no cut matched come last, without a clip — never the whole
+    /// reel, which on a fast montage loops 2-3 other exercises under one name.
     var steps: [Step] {
         let noted = details.moves ?? []
-        guard !noted.isEmpty else {
-            return moves.map { Step(name: $0.name, clip: $0.clip, dose: nil, cues: nil) }
+        guard !moves.isEmpty else {
+            return noted.map { Step(name: $0.name, clip: nil, dose: $0.dose, cues: $0.cues) }
         }
-        var unused = moves
-        var out: [Step] = noted.map { n in
-            let i = unused.firstIndex { Self.same($0.name, n.name) }
-                ?? unused.firstIndex { Self.related($0.name, n.name) }
-            let clip = i.map { unused.remove(at: $0).clip }
-            return Step(name: n.name, clip: clip ?? loop, dose: n.dose, cues: n.cues)
+        var left = noted
+        var out: [Step] = moves.map { m in
+            let i = left.firstIndex { Self.same($0.name, m.name) } ?? left.firstIndex { Self.related($0.name, m.name) }
+            let n = i.map { left.remove(at: $0) }
+            return Step(name: m.name, clip: m.clip, dose: n?.dose, cues: n?.cues)
         }
-        out += unused.map { Step(name: $0.name, clip: $0.clip, dose: nil, cues: nil) }
+        out += left.map { Step(name: $0.name, clip: nil, dose: $0.dose, cues: $0.cues) }
         return out
     }
 

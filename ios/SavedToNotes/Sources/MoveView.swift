@@ -88,7 +88,7 @@ struct MoveView: View {
                                 // A tile opens the player at that very move.
                                 Button { playing = PlayList(saves: [s], start: i) } label: {
                                     VStack(alignment: .leading, spacing: 4) {
-                                        ClipTile(clip: st.clip ?? s.cover, radius: 10)
+                                        ClipTile(clip: st.clip, radius: 10)
                                             .overlay(alignment: .topLeading) {
                                                 Text("\(i + 1)").font(.system(size: 11, weight: .bold))
                                                     .foregroundStyle(i == 0 ? Theme.ground : Theme.ink)
@@ -254,7 +254,15 @@ struct RoutinePlayer: View {
                         .accessibilityLabel("Close routine")
                     }
                     // The move's own clip when the reel was split, else the whole reel.
-                    LoopView(clip: s.step?.clip ?? s.save.cover)
+                    LoopView(clip: s.step == nil ? s.save.cover : s.step?.clip)
+                        .overlay {
+                            if s.step != nil && s.step?.clip == nil {
+                                Text("No clip for this move — follow the description below")
+                                    .font(.system(size: 14)).foregroundStyle(Theme.mute)
+                                    .multilineTextAlignment(.center).padding(24)
+                                    .offset(y: 40)
+                            }
+                        }
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .clipShape(RoundedRectangle(cornerRadius: 22))
                         .id(s.step?.clip?.key ?? s.save.id)

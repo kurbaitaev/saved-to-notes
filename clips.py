@@ -49,9 +49,9 @@ _PROMPT = (
 # describe the same moves with the same names.
 _HINT = (
     "\nThe written note for this video lists these exercises, in order:\n{moves}\n"
-    "Use exactly these names for the ones you find, in this order. Skip a listed one "
-    "only if it is never shown; add an unlisted one only if it is clearly a different "
-    "exercise.")
+    "Reuse one of these names ONLY when the clip clearly shows that exact exercise; "
+    "otherwise give a short name of your own for what is actually shown. A wrong "
+    "name is worse than a new one.")
 
 
 class ClipError(Exception):

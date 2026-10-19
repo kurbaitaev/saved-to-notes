@@ -1321,7 +1321,7 @@ def test_recut_clips_get_new_urls_and_shares_report_where_they_went(tmp_path):
 
 
 def test_move_hints_reach_gemini_prompt():
-    assert "{moves}" in clips._HINT and "Use exactly these names" in clips._HINT
+    assert "{moves}" in clips._HINT and "A wrong name is worse than a new one" in " ".join(clips._HINT.split())
 
 
 def test_moves_come_from_shots_one_exercise_each():
