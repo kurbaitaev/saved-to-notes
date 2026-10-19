@@ -1140,39 +1140,6 @@ def test_details_are_wired_into_prompt_schema_and_sanitize():
     assert bot._sanitize({"folder": "Idea", "details": {"name": "x"}})["details"] == {}
 
 
-def test_shortcut_inbox_claims_each_row_once_and_skips_junk():
-    """Rows are archived before they're returned, so a slow run can't be picked
-    up again by the next minute's poll; a row without a usable link is still
-    archived (otherwise it would be re-read forever) but not processed."""
-    import os
-    calls = []
-
-    def fake_api(url, token, method="GET", body=None):
-        calls.append((method, url, body))
-        if url.endswith("/query"):
-            return {"results": [
-                {"id": "p1", "properties": {"Source": {"url": "https://instagram.com/reel/A/"},
-                                            "Why": {"rich_text": [{"plain_text": "for Sunday"}]}}},
-                {"id": "p2", "properties": {"Source": {"url": None}}}]}
-        return {}
-
-    saved = {k: os.environ.get(k) for k in ("NOTION_TOKEN", "NOTION_DATABASE_ID")}
-    os.environ.update(NOTION_TOKEN="t", NOTION_DATABASE_ID="db")
-    try:
-        with patched(notion, "_api", fake_api), \
-             patched(notion, "_db_props", lambda t, d: {"Queued": "checkbox"}):
-            got = notion.inbox_take()
-    finally:
-        for k, v in saved.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
-    assert got == [("https://instagram.com/reel/A/", "for Sunday")]
-    archived = [u for m, u, b in calls if m == "PATCH" and b == {"archived": True}]
-    assert len(archived) == 2
-
-
 # --- Afterscroll app store + API -----------------------------------------
 
 import appdb  # noqa: E402

@@ -1361,9 +1361,6 @@ async def _heartbeat(bot=None) -> None:
             _trim_logs()
         if bot is not None and ticks and ticks % RETRY_EVERY_MIN == 0:
             asyncio.create_task(_drain_pending(bot))
-        if bot is not None:
-            # Notion's queue (old shortcut builds) costs an API call: once a minute.
-            asyncio.create_task(_take_inbox(bot, notion_too=True))
         ticks += 1
         await asyncio.sleep(60)
 
@@ -1387,7 +1384,7 @@ async def _inbox_loop(bot) -> None:
         await asyncio.sleep(INBOX_EVERY_S)
 
 
-async def _take_inbox(bot, notion_too: bool = False) -> None:
+async def _take_inbox(bot) -> None:
     """Links shared from the phone (the app's share button or the shortcut, both
     via api.py) wait in the app inbox; run each through the normal pipeline,
     exactly like a Telegram message."""
@@ -1395,12 +1392,6 @@ async def _take_inbox(bot, notion_too: bool = False) -> None:
     if chat is None:
         return
     links = await asyncio.to_thread(appdb.take_inbox)
-    try:
-        # Old shortcut builds wrote queued rows into Notion; still honoured.
-        if notion_too and notion.enabled():
-            links += await asyncio.to_thread(notion.inbox_take)
-    except Exception as e:  # noqa: BLE001
-        log.warning("notion inbox check failed: %s", e)
     for url, note in links:
         log.info("inbox: %s", url)
         asyncio.create_task(process(bot, chat, url, force=False, user_note=note, via_app=True))
