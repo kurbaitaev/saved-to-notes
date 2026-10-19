@@ -432,14 +432,45 @@ def test_every_note_gets_exactly_one_valid_folder():
 
 def test_folder_normalizer_tolerates_near_misses():
     cases = {
-        "Startup": "Startup", "startup tips": "Startup", "Fundraising": "Startup",
-        "AI Tools": "Tools & AI", "tooling": "Tools & AI",
-        "content": "Content Ideas", "Content Ideas": "Content Ideas",
-        "motivation": "Mindset", "quotes": "Mindset",
-        "Learning & Self": "Learning & Self",
+        "Idea": "Idea", "idea": "Idea", "thoughts": "Idea",
+        "How to": "How-to", "how-to": "How-to", "tutorial": "How-to",
+        "Prompt and Build": "Prompt & Build", "prompts": "Prompt & Build",
+        "AI Tools": "Tool", "tooling": "Tool", "websites": "Tool",
+        "reading list": "Read & Watch", "books": "Read & Watch",
+        "investors": "Opportunity", "Fundraising": "Opportunity",
+        "content": "Craft", "hooks": "Craft",
+        "quotes": "Quote", "recipe": "Cook", "workout": "Move",
+        "coffee place": "Visit", "meetup": "Attend", "gadget": "Buy",
     }
     for given, want in cases.items():
         assert folders.normalize(given) == want, f"{given} -> {folders.normalize(given)}"
+
+
+def test_crossover_rules_are_in_the_prompt():
+    """The crossover decisions are the point of the taxonomy (books are never
+    Buy, a list is filed by what is in it, real life wins). If they drift out
+    of the prompt the model falls back to filing by subject again."""
+    prompt = bot._load_prompt()
+    for phrase in ("Real life wins", "A list is not a category", "Books are"):
+        assert phrase in folders.RULES and phrase in prompt, phrase
+    assert set(folders.REAL_LIFE) | set(folders.KNOWLEDGE) == set(folders.FOLDERS)
+    assert not set(folders.REAL_LIFE) & set(folders.KNOWLEDGE)
+
+
+def test_area_is_derived_from_topics_and_covers_every_topic():
+    """Area is computed, never chosen, so it can't contradict the topics — and
+    a topic with no area would leave its notes ungrouped in Notion."""
+    for t in topics.TOPICS:
+        assert topics.area_of([t]), f"topic {t} has no area"
+    assert topics.area_of(["investors-fundraising", "books-reading"]) == "Startup & Money"
+    assert topics.area_of(["made-up"]) == "" and topics.area_of(None) == ""
+
+
+def test_the_vault_note_records_category_and_area():
+    text = _note_text({"title": "T", "folder": folders.TOOL, "topics": ["ai-tools"]},
+                      "https://x.test/3", "words")
+    assert "category: Tool" in text and "area: AI & Building" in text
+    assert "categories:" not in text, "the retired label must not come back"
 
 
 def test_folder_directory_name_matches_the_notion_value():
@@ -469,7 +500,7 @@ def test_openai_schema_obeys_strict_mode():
     check(agent_openai.SCHEMA)
     # The renderers, Notion sink and vault writer all read these.
     for field in ("title", "folder", "topics", "content_type", "items", "points",
-                  "steps", "slides", "tags", "categories", "description", "summary",
+                  "steps", "slides", "tags", "description", "summary",
                   "why_save", "quote"):
         assert field in agent_openai.SCHEMA["properties"], f"schema is missing {field}"
 
@@ -626,7 +657,7 @@ def test_slides_do_not_displace_the_transcript():
     """These were an if/elif, so a post with both on-screen text and speech
     kept only the slides."""
     text = _note_text(
-        {"title": "Both", "folder": folders.CONTENT_IDEAS,
+        {"title": "Both", "folder": folders.CRAFT,
          "slides": [{"text": "ON SCREEN WORDS", "description": "d"}]},
         "https://x.test/1", "SPOKEN WORDS")
     assert "SPOKEN WORDS" in text, "the transcript was dropped"
@@ -638,7 +669,7 @@ def test_a_tweet_keeps_its_exact_wording():
     """X posts have no transcript — the text lives in the caption, which never
     reached the note. All 11 saved tweets had no verbatim text anywhere."""
     tweet = "The exact words of the post, which I may want to quote later."
-    text = _note_text({"title": "T", "folder": folders.STARTUP},
+    text = _note_text({"title": "T", "folder": folders.OPPORTUNITY},
                       "https://x.com/a/status/1", "",
                       {"platform": "twitter", "caption": tweet})
     assert tweet in text
@@ -647,7 +678,7 @@ def test_a_tweet_keeps_its_exact_wording():
 
 def test_a_caption_is_not_duplicated_when_it_equals_the_transcript():
     same = "identical text"
-    text = _note_text({"title": "T", "folder": folders.MINDSET},
+    text = _note_text({"title": "T", "folder": folders.IDEA},
                       "https://x.test/2", same,
                       {"platform": "instagram", "caption": same})
     assert text.count(same) == 1

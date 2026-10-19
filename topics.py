@@ -99,10 +99,35 @@ Choose the 1–3 that a person would actually search for to find this note again
 Rules:
 - Use ONLY these exact strings. Never invent one; an invented topic is dropped.
 - 1–3 per note. Two precise topics beat three vague ones.
-- Topics are independent of the folder: a book recommendation about fundraising
-  is folder `Startup`, topics `investors-fundraising` + `books-reading`.
+- Topics are independent of the category: a book recommendation about fundraising
+  is category `Read & Watch`, topics `investors-fundraising` + `books-reading`.
 - Keep filling `tags` as normal — those stay free-form and are unrelated to this.
 """
+
+
+# Area is the coarse "what is it about" grouping shown in Notion. It is DERIVED
+# from the note's first topic rather than asked of the model, so the two can
+# never disagree — a second model-chosen subject axis is exactly the overlap
+# (folder vs topics vs categories) that made the old Notion views unreadable.
+AREAS: dict[str, tuple[str, ...]] = {
+    "Content": ("content-creation", "hooks-storytelling", "platform-growth",
+                "personal-brand", "marketing-ads", "writing"),
+    "AI & Building": ("ai-tools",),
+    "Startup & Money": ("startup-building", "investors-fundraising", "money-finance"),
+    "Mind & Faith": ("mindset", "philosophy-faith", "habits-discipline"),
+    "Body": ("health",),
+    "Learning": ("learning-education", "books-reading", "psychology-brain"),
+    "Life": ("career-life", "productivity"),
+}
+_AREA_OF = {t: area for area, ts in AREAS.items() for t in ts}
+
+
+def area_of(values) -> str:
+    """The Area of a note's first known topic, or "" when it has none."""
+    for t in normalize_list(values):
+        if t in _AREA_OF:
+            return _AREA_OF[t]
+    return ""
 
 
 def _slug(value: str) -> str:

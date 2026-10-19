@@ -70,7 +70,7 @@ struct NotionClient {
         return Note(
             id: id,
             title: title,
-            folder: select(props["Folder"]),
+            folder: select(props["Category"]).isEmpty ? select(props["Folder"]) : select(props["Category"]),
             topics: multiSelect(props["Topics"]),
             summary: plain(props["Summary"]),
             hook: plain(props["Hook / key idea"]),

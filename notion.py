@@ -319,14 +319,16 @@ def push_reel(obj: dict, source_url: str, date_iso: str,
             props[name] = payload
 
     setp("Source", source_url)
-    setp("Folder", folders.normalize(obj.get("folder")))
+    setp("Category", folders.normalize(obj.get("folder")))
+    setp("Area", topics.area_of(obj.get("topics")))
     setp("Topics", topics.normalize_list(obj.get("topics")))
     setp("Review question", obj.get("review_question") or "")
     setp("Date", date_iso)
     setp("Items", len(items))
-    # No "Category" any more. It overlapped Folder and Content type, and having
-    # two taxonomies side by side is what made the database unreadable — an
-    # investor list showed as "Business idea" while its Folder said Startup.
+    # Category replaced Folder (Oct 2026). It is the ONE place a note is filed;
+    # Area is derived from Topics, never chosen separately — side-by-side
+    # taxonomies are what made the database unreadable before (an investor
+    # list showed as "Business idea" while its Folder said Startup).
     # Cross-cutting labels live in `tags` inside the page.
     if _ok(author):
         setp("Author", author[:200])

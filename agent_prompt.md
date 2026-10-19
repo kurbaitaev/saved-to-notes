@@ -52,8 +52,10 @@ From the images, capture:
 Only report text you can actually read. Never guess at blurry text, and never describe
 camera work, clothing, or scenery — this is about information, not visuals.
 
-## 2. Detect the content type
-Pick the ONE `content_type` that fits best:
+## 2. Detect the content shape
+`content_type` is the SHAPE of the content and only decides how the note is laid out
+(quote card, step list, item list...). Where it is filed is the separate `folder` decision
+below. Pick the ONE `content_type` that fits best:
 `quote`, `motivational_quote`, `thought`, `tip`, `educational`, `tutorial`,
 `book_recommendation`, `podcast_recommendation`, `tool_recommendation`,
 `product_recommendation`, `resource_list`, `story`, `opinion`, `other`.
@@ -101,11 +103,10 @@ quotes. Keep every field short — one sentence unless it's a list.
 
 ## 4. Always also fill (for storage + preservation)
 - `title` — ≤6 words.
-- `folder` — EXACTLY ONE of: {{FOLDER_LIST}} (rules below).
+- `folder` — the category: EXACTLY ONE of: {{FOLDER_LIST}} (rules below).
 - `topics` — 1–3 from the topic list below.
 - `description` — 1–2 line factual description.
 - `summary` — short factual summary.
-- `categories` — any of: Content & Creator, Recommendations, Mindset, Life & Career, Tools & AI, Business idea, Quote.
 - `kind` — video | carousel | image | article.
 
 {{FOLDER_RULES}}
@@ -123,7 +124,6 @@ quotes. Keep every field short — one sentence unless it's a list.
   "topics": ["...", "..."],
   "content_type": "...",
   "kind": "video | carousel | article",
-  "categories": ["..."],
   "author": "... or Author not clear",
   "quote": "exact verbatim hero quote, or Not clear from the Reel",
   "context": "",

@@ -493,7 +493,7 @@ _SEARCH_URL = re.compile(
     r"bing\.com/search|duckduckgo\.com)", re.I)
 
 
-_STR_LISTS = ("points", "steps", "tags", "categories")
+_STR_LISTS = ("points", "steps", "tags")
 
 
 def _sanitize(obj: dict) -> dict:
@@ -1029,18 +1029,18 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str,
     # "<date> reel.md" and silently overwrite each other.
     stamp = hashlib.sha1(url.encode()).hexdigest()[:6]
     fname = f"{today} {safe} [{stamp}].md"
-    cats = ", ".join(obj.get("categories") or [])
     folder = folders.normalize(obj.get("folder"))
     topic_list = ", ".join(topics.normalize_list(obj.get("topics")))
     tags = " ".join("#" + str(t).strip().replace(" ", "_") for t in (obj.get("tags") or []) if t)
     author = (obj.get("author") or "").strip()
     quote = (obj.get("quote") or "").strip()
-    # folder and topics belong in the file too — the note should say where it
-    # lives and what it's about without depending on the directory it sits in.
+    # Category, area and topics belong in the file too — the note should say
+    # where it lives and what it's about without depending on its directory.
     L = ["---", f"source: {url}", f"date: {today}", "type: reel-note",
-         f"folder: {folder}", f"topics: [{topic_list}]",
+         f"category: {folder}", f"area: {topics.area_of(obj.get('topics'))}",
+         f"topics: [{topic_list}]",
          f"content_type: {obj.get('content_type', '')}", f"kind: {obj.get('kind', '')}",
-         f"categories: [{cats}]", "status: inbox"]
+         "status: inbox"]
     if obj.get("review_question"):
         L.append(f"review_question: {obj['review_question']}")
     L += ["---", "", f"# {title}", ""]
