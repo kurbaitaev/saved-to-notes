@@ -1409,3 +1409,15 @@ def test_the_save_move_list_is_rebuilt_from_the_clips():
     assert clips.as_detail_moves(made, noted) == [
         {"name": "Pigeon", "dose": "1 min each side", "cues": "square hips"},
         {"name": "Frog", "dose": "30 s", "cues": "knees wide"}]
+
+
+def test_answers_are_matched_to_shots_by_time_not_by_label():
+    """Gemini once returned "range": "0.0-3.4" instead of 1 and every answer of
+    two workouts was dropped. The answer's own times place it."""
+    spans = [(0.0, 3.43), (3.43, 20.85)]
+    raw = [{"range": "0.0-3.4", "name": "Hip extensions", "start": 0.0, "end": 3.4, "dose": "20 reps"},
+           {"range": "3.4-20.9", "name": "L-sit to crab", "start": 3.4, "end": 8.0},
+           {"range": "3.4-20.9", "name": "W slides", "start": 17.0, "end": 20.9}]
+    got = clips.per_shot(raw, spans)
+    assert [g["name"] for g in got] == ["Hip extensions", "L-sit to crab", "W slides"]
+    assert got[0]["dose"] == "20 reps"

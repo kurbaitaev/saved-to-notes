@@ -126,6 +126,21 @@ def cut(src: pathlib.Path, out: pathlib.Path, start: float = 0.0, end: float | N
 
 # --- asking Gemini ---------------------------------------------------------
 
+# Enforced answer shape. Free-form JSON drifted between calls — "range" came
+# back as "0.0-3.4" instead of 1, and every answer of two workouts was dropped.
+_SCHEMA = {
+    "type": "ARRAY",
+    "items": {
+        "type": "OBJECT",
+        "properties": {
+            "range": {"type": "INTEGER"}, "name": {"type": "STRING"}, "cue": {"type": "STRING"},
+            "dose": {"type": "STRING"}, "start": {"type": "NUMBER"}, "end": {"type": "NUMBER"},
+        },
+        "required": ["name", "start", "end"],
+    },
+}
+
+
 def _ask_gemini(src: pathlib.Path, work: pathlib.Path, prompt: str, tries: int = 2) -> list | None:
     """Send a small full-length proxy of the video plus a prompt; return the
     JSON array it answers with, or None (no key, or still failing after a
@@ -141,7 +156,8 @@ def _ask_gemini(src: pathlib.Path, work: pathlib.Path, prompt: str, tries: int =
     body = json.dumps({"contents": [{"parts": [
         {"inline_data": {"mime_type": "video/mp4", "data": base64.b64encode(proxy.read_bytes()).decode()}},
         {"text": prompt}]}],
-        "generationConfig": {"responseMimeType": "application/json", "temperature": 0}}).encode()
+        "generationConfig": {"responseMimeType": "application/json", "responseSchema": _SCHEMA,
+                             "temperature": 0}}).encode()
     for attempt in range(1, tries + 1):
         try:
             req = urllib.request.Request(
@@ -178,6 +194,23 @@ def _dose(v) -> str:
 
 # --- turning answers into moves -----------------------------------------------
 
+def _shot_of(e: dict, spans: list[tuple[float, float]]) -> int | None:
+    """Which shot an answer belongs to: the one holding the middle of its own
+    start-end, else its `range` number. The number alone was unreliable."""
+    try:
+        mid = (float(e["start"]) + float(e["end"])) / 2
+        for i, (a, b) in enumerate(spans):
+            if a - 0.05 <= mid <= b + 0.05:
+                return i
+    except (KeyError, TypeError, ValueError):
+        pass
+    try:
+        i = int(e["range"]) - 1
+    except (KeyError, TypeError, ValueError):
+        return None
+    return i if 0 <= i < len(spans) else None
+
+
 def per_shot(raw: list, spans: list[tuple[float, float]]) -> list[dict]:
     """Gemini's per-range answers, each clamped inside its own shot. A short
     shot keeps only its first exercise, over the whole shot."""
@@ -185,12 +218,11 @@ def per_shot(raw: list, spans: list[tuple[float, float]]) -> list[dict]:
     for e in raw if isinstance(raw, list) else []:
         if not isinstance(e, dict):
             continue
-        try:
-            i = int(e["range"]) - 1
-        except (KeyError, TypeError, ValueError):
+        i = _shot_of(e, spans)
+        if i is None:
             continue
         name = _text(e.get("name"))
-        if not (0 <= i < len(spans)) or not name or name.lower() in ("none", "n/a"):
+        if not name or name.lower() in ("none", "n/a"):
             continue
         lo, hi = spans[i]
         a, b = lo, hi
