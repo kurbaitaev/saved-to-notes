@@ -170,40 +170,63 @@ def shots(src: pathlib.Path) -> list[tuple[float, float]]:
 
 
 _NAME_PROMPT = (
-    "This exercise video is edited as separate shots. For EACH time range below, name "
-    "the one exercise or stretch demonstrated in it. If a range shows no exercise (talking, "
-    "title card), answer \"none\". If two ranges show the same exercise, give them the same "
-    "name. Reply with ONLY a JSON array of strings, one per range, in order.\n"
+    "This exercise video is edited as separate shots, listed below as time ranges. "
+    "For EACH range, list the exercises demonstrated in it, in order. Most ranges show one "
+    "exercise; a long range filmed in one take may show several — then give each its own "
+    "start and end (seconds, one decimal) INSIDE that range. Skip ranges that show no "
+    "exercise (talking, title card). Reply with ONLY JSON: "
+    '[{{"range": 1, "name": "...", "start": 0.0, "end": 0.0}}]\n'
     "Ranges (seconds):\n{ranges}")
 
 
 def name_shots(src: pathlib.Path, work: pathlib.Path, spans: list[tuple[float, float]],
-               hints: list[str] | None = None) -> list[str]:
+               hints: list[str] | None = None) -> list[dict]:
+    """[{name, start, end}] with every entry clamped inside its own shot, so a
+    clip can never cross a cut into the next exercise."""
     ranges = "\n".join(f"{i}. {a:.1f}-{b:.1f}" for i, (a, b) in enumerate(spans, 1))
     text = _ask_gemini(src, work, _NAME_PROMPT.format(ranges=ranges) + _hint(hints))
     m = re.search(r"\[.*\]", text, re.S)
-    names = json.loads(m.group(0)) if m else []
-    if not isinstance(names, list) or len(names) != len(spans):
-        return [f"Move {i}" for i in range(1, len(spans) + 1)]
-    return [str(n).strip() or "none" for n in names]
+    raw = json.loads(m.group(0)) if m else []
+    out = []
+    for e in raw if isinstance(raw, list) else []:
+        try:
+            i = int(e["range"]) - 1
+            name = str(e["name"]).strip()
+        except (KeyError, TypeError, ValueError):
+            continue
+        if not (0 <= i < len(spans)) or not name or name.lower() in ("none", "n/a"):
+            continue
+        lo, hi = spans[i]
+        try:
+            a, b = float(e.get("start", lo)), float(e.get("end", hi))
+        except (TypeError, ValueError):
+            a, b = lo, hi
+        a, b = max(lo, min(a, hi)), max(lo, min(b, hi))
+        if b - a < 0.8:          # a nonsense sub-range: take the whole shot
+            a, b = lo, hi
+        out.append({"name": name, "start": a, "end": b, "shot": i})
+    return out
 
 
-def moves_from_shots(spans: list[tuple[float, float]], names: list[str]) -> list[dict]:
-    """One move per run of shots with the same name; 'none' shots dropped.
-    The cut keeps clear of the shot edges so no frame of a neighbour leaks in."""
+def moves_from_shots(found: list[dict]) -> list[dict]:
+    """Order by time, drop overlaps, merge a move that continues into the next
+    shot under the same name, and keep clear of shot edges so no frame of a
+    neighbour leaks in. Clips are capped at 8 s."""
     out: list[dict] = []
-    for (a, b), n in zip(spans, names, strict=True):
-        if n.lower() in ("none", "", "n/a"):
+    for f in sorted(found, key=lambda f: f["start"]):
+        if out and f["start"] < out[-1]["end"] - 0.05:
+            continue  # overlaps the previous move
+        if (out and out[-1]["name"].lower() == f["name"].lower()
+                and f["shot"] == out[-1]["shot"] + 1 and abs(f["start"] - out[-1]["end"]) < 0.3):
+            out[-1]["end"], out[-1]["shot"] = f["end"], f["shot"]
             continue
-        if out and out[-1]["name"].lower() == n.lower() and abs(out[-1]["_end"] - a) < 0.05:
-            out[-1]["_end"] = b
-            continue
-        out.append({"name": n, "_start": a, "_end": b})
+        out.append(dict(f))
+    moves = []
     for m in out:
-        a, b = m.pop("_start"), m.pop("_end")
-        m["start"] = round(a + 0.1, 2)
-        m["end"] = round(min(b - 0.1, a + 8.1), 2)
-    return [m for m in out if m["end"] - m["start"] >= 0.6]
+        a, b = m["start"] + 0.1, min(m["end"] - 0.1, m["start"] + 8.1)
+        if b - a >= 0.6:
+            moves.append({"name": m["name"], "start": round(a, 2), "end": round(b, 2)})
+    return moves
 
 
 def validate(raw, total: float) -> list[dict]:
@@ -242,7 +265,7 @@ def make_for_save(url: str, sid: str, video_path: str | None = None,
         try:
             spans = shots(src)
             if len(spans) >= 2:
-                moves = moves_from_shots(spans, name_shots(src, work, spans, hints))
+                moves = moves_from_shots(name_shots(src, work, spans, hints))
             else:
                 moves = find_moves(src, work, hints)  # one continuous take
         except Exception as e:  # noqa: BLE001

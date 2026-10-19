@@ -1325,12 +1325,17 @@ def test_move_hints_reach_gemini_prompt():
 
 
 def test_moves_come_from_shots_one_exercise_each():
-    """igor.system's reels cut to a new shot per exercise; a clip must cover
-    exactly one shot (it showed 2-3 exercises when Gemini guessed timestamps).
-    Same-named neighbours merge, talking-head shots drop, edges are trimmed."""
-    spans = [(0.0, 1.9), (1.9, 3.8), (3.8, 5.6), (5.6, 7.3), (7.3, 9.2)]
-    names = ["none", "Pigeon", "Pigeon", "Deep squat", "Frog"]
-    got = clips.moves_from_shots(spans, names)
-    assert [m["name"] for m in got] == ["Pigeon", "Deep squat", "Frog"]
-    assert got[0]["start"] == 2.0 and got[0]["end"] == 5.5, "two Pigeon shots merge"
+    """A clip never crosses a cut (igor.system's clips showed 2-3 exercises when
+    Gemini guessed timestamps); a long one-take shot may hold several moves
+    (Mr. Fine's 11.8 s shot); a move continuing into the next shot merges."""
+    found = [
+        {"name": "Pigeon", "start": 1.9, "end": 3.8, "shot": 1},
+        {"name": "Pigeon", "start": 3.8, "end": 5.6, "shot": 2},
+        {"name": "Butterfly", "start": 5.6, "end": 9.0, "shot": 3},
+        {"name": "Frog", "start": 9.0, "end": 12.0, "shot": 3},
+        {"name": "Overlap", "start": 10.0, "end": 11.0, "shot": 3},
+    ]
+    got = clips.moves_from_shots(found)
+    assert [m["name"] for m in got] == ["Pigeon", "Butterfly", "Frog"]
+    assert got[0]["start"] == 2.0 and got[0]["end"] == 5.5, "Pigeon continues into the next shot"
     assert all(a["end"] <= b["start"] for a, b in zip(got, got[1:], strict=False)), "clips never overlap"
