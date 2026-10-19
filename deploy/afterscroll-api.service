@@ -1,0 +1,20 @@
+[Unit]
+Description=Afterscroll API (the iOS app and its share button)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=__DIR__
+ExecStart=__PYTHON__ __DIR__/api.py
+Restart=always
+RestartSec=5
+StandardOutput=append:__DIR__/logs/api.out.log
+StandardError=append:__DIR__/logs/api.err.log
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectHome=read-only
+ReadWritePaths=__DIR__
+
+[Install]
+WantedBy=default.target

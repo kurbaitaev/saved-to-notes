@@ -1171,3 +1171,88 @@ def test_shortcut_inbox_claims_each_row_once_and_skips_junk():
     assert got == [("https://instagram.com/reel/A/", "for Sunday")]
     archived = [u for m, u, b in calls if m == "PATCH" and b == {"archived": True}]
     assert len(archived) == 2
+
+
+# --- Afterscroll app store + API -----------------------------------------
+
+import appdb  # noqa: E402
+import clips  # noqa: E402
+
+
+def _tmp_appdb(tmp):
+    return [patched(appdb, "ROOT", tmp), patched(appdb, "DB", tmp / "app.db"),
+            patched(appdb, "CLIPS", tmp / "clips"), patched(appdb, "INBOX", tmp / "inbox")]
+
+
+def test_app_store_keeps_only_real_life_and_drops_refiled_saves(tmp_path):
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        sid = appdb.upsert("https://x/1", "Move", "Hips", "Mr. Fine", "", {"minutes": 8})
+        assert appdb.upsert("https://x/2", "Idea", "A thought") is None
+        appdb.set_clips(sid, [{"name": "Whole reel", "file": f"{sid}/loop.mp4"},
+                              {"name": "Pigeon", "file": f"{sid}/move1.mp4", "start": 3.3, "end": 5.6}])
+        [s] = appdb.all_saves()
+        assert s["category"] == "Move" and s["details"] == {"minutes": 8}
+        assert s["loop"].endswith("/loop.mp4") and [m["name"] for m in s["moves"]] == ["Pigeon"]
+        # Re-filed out of a real-life category (the judo saves) → gone from the app.
+        appdb.upsert("https://x/1", "How-to", "Hips")
+        assert appdb.all_saves() == []
+
+
+def test_app_inbox_is_claimed_once_and_skips_junk(tmp_path):
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        appdb.enqueue("https://www.instagram.com/reel/A/", "for Sunday")
+        appdb.enqueue("not a link")
+        assert appdb.take_inbox() == [("https://www.instagram.com/reel/A/", "for Sunday")]
+        assert appdb.take_inbox() == []
+
+
+def test_move_cuts_are_validated_before_cutting():
+    raw = [{"name": "Hip flexor", "start": 0.5, "end": 2.5},
+           {"name": "Too short", "start": 3.0, "end": 3.2},
+           {"name": "Pigeon", "start": 3.3, "end": 40},          # capped at 8 s
+           {"name": "Overlaps", "start": 4.0, "end": 6.0},
+           {"name": "", "start": 12, "end": 14},
+           {"name": "Past the end", "start": 29, "end": 31}, "junk"]
+    got = clips.validate(raw, total=27.9)
+    assert [m["name"] for m in got] == ["Hip flexor", "Pigeon"]
+    assert got[1]["end"] == 11.3
+
+
+def test_api_requires_the_token_and_queues_shared_links(tmp_path):
+    import http.client
+    import os
+    import threading
+    from http.server import ThreadingHTTPServer
+
+    import api
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        os.environ["APP_TOKEN"] = "secret-test"
+        srv = ThreadingHTTPServer(("127.0.0.1", 0), api.Handler)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            def call(method, path, body=None, token="secret-test", headers=None):
+                c = http.client.HTTPConnection("127.0.0.1", srv.server_port, timeout=5)
+                h = {"Authorization": f"Bearer {token}", **(headers or {})}
+                c.request(method, path, body=body, headers=h)
+                r = c.getresponse()
+                return r.status, r.read()
+            assert call("GET", "/v1/health", token="")[0] == 200
+            assert call("GET", "/v1/saves", token="wrong")[0] == 401
+            code, _ = call("POST", "/v1/save", json.dumps({"url": "Look https://instagram.com/reel/B/ wow"}))
+            assert code == 202 and appdb.take_inbox() == [("https://instagram.com/reel/B/", "")]
+            assert call("POST", "/v1/save", json.dumps({"url": "no link"}))[0] == 400
+            sid = "0123456789ab"
+            (appdb.CLIPS / sid).mkdir(parents=True)
+            (appdb.CLIPS / sid / "loop.mp4").write_bytes(b"0123456789")
+            code, body = call("GET", f"/v1/clips/{sid}/loop.mp4", headers={"Range": "bytes=2-5"})
+            assert code == 206 and body == b"2345", "AVPlayer streams with Range requests"
+            assert call("GET", f"/v1/clips/{sid}/../app.db")[0] == 404
+        finally:
+            srv.shutdown()
+            os.environ.pop("APP_TOKEN", None)

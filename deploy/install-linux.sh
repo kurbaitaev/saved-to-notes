@@ -31,7 +31,8 @@ render() { sed -e "s|__DIR__|$HERE|g" -e "s|__PYTHON__|$PYTHON|g" "$1"; }
 for unit in saved-to-notes.service \
             saved-to-notes-watchdog.service saved-to-notes-watchdog.timer \
             saved-to-notes-digest.service   saved-to-notes-digest.timer \
-            saved-to-notes-vaultsync.service saved-to-notes-vaultsync.timer; do
+            saved-to-notes-vaultsync.service saved-to-notes-vaultsync.timer \
+            afterscroll-api.service; do
   render "$HERE/deploy/$unit" > "$UNIT_DIR/$unit"
 done
 
@@ -40,6 +41,11 @@ systemctl --user enable --now saved-to-notes.service
 systemctl --user enable --now saved-to-notes-watchdog.timer
 systemctl --user enable --now saved-to-notes-digest.timer
 systemctl --user enable --now saved-to-notes-vaultsync.timer
+# The app's API needs a token; make one the first time (never printed).
+grep -q '^APP_TOKEN=.' "$HERE/.env" 2>/dev/null \
+  || echo "APP_TOKEN=$("$PYTHON" -c 'import secrets;print(secrets.token_urlsafe(32))')" >> "$HERE/.env"
+systemctl --user enable --now afterscroll-api.service
+systemctl --user restart afterscroll-api.service
 
 # Without linger the units stop the moment the SSH session ends.
 if ! loginctl show-user "$(id -un)" 2>/dev/null | grep -q "Linger=yes"; then

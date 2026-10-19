@@ -45,3 +45,6 @@ vault.*
 ledger.json*
 pending*.json
 *.backup*
+
+# Afterscroll app store: the db and clips are personal data
+app-data/

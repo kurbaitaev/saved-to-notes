@@ -33,6 +33,7 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 
 import acquire
 import agent_openai
+import appdb
 import claude_login
 import clips
 import details
@@ -393,6 +394,7 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
     sinks = [asyncio.to_thread(_write_vault_note, obj, url, transcript, date_iso, media)]
     if notion.enabled():
         sinks.append(asyncio.to_thread(_sync_notion, obj, media, url, transcript, date_iso))
+    sinks.append(asyncio.to_thread(_sync_app, obj, media, url, date_iso))
     vault_rel = ""
     # A failing sink must NOT abort delivery or skip ledger.put (else the reel is
     # lost: stuck placeholder, never marked done, pending removed → no recovery).
@@ -1119,6 +1121,27 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str,
     return f"{folder}/{fname}"
 
 
+def _sync_app(obj: dict, media: dict, url: str, date_iso: str) -> str:
+    """Real-life saves go to the Afterscroll app's own store (appdb); workouts
+    also get their loops. Knowledge notes are skipped — and a save re-filed out
+    of a real-life category is removed from the app."""
+    author = (obj.get("author") or "").strip()
+    author = author if notion._ok(author) else (media.get("author") or "")
+    sid = appdb.upsert(url, obj.get("folder"), str(obj.get("title") or ""), author,
+                       str(obj.get("description") or obj.get("summary") or ""),
+                       obj.get("details") or {}, date_iso)
+    if not sid or obj.get("folder") != folders.MOVE:
+        return ""
+    try:
+        made = clips.make_for_save(url, sid, media.get("video_path"))
+        appdb.set_clips(sid, made)
+        return f"{len(made) - 1} move clip(s)"
+    except Exception as e:  # noqa: BLE001
+        # The save is in the app either way; it just shows without a loop.
+        log.warning("clips for %s failed: %s", url, e)
+        return "no clip"
+
+
 def _sync_notion(obj: dict, media: dict, url: str, transcript: str, date_iso: str) -> str:
     # The agent is told to emit the literal "Author not clear" when unsure, and
     # that string is truthy — it used to beat the real username the acquirer
@@ -1138,16 +1161,7 @@ def _sync_notion(obj: dict, media: dict, url: str, transcript: str, date_iso: st
             # The page exists, so the ledger is right to say done — but the note
             # is incomplete and the user has to know.
             raise RuntimeError(f"Notion page saved but incomplete — {res['warning']}")
-        line = f"🗂 Notion: 1 reel · {res['items']} items"
-        if obj.get("folder") == folders.MOVE:
-            # Best-effort: the note is saved either way; the Move screen just
-            # shows the routine without a loop until a later backfill.
-            try:
-                line += " · " + clips.clip_for_page(url, res.get("page_id", ""), media.get("video_path"))
-            except Exception as e:  # noqa: BLE001
-                log.warning("clip for %s failed: %s", url, e)
-                line += " · no clip"
-        return line
+        return f"🗂 Notion: 1 reel · {res['items']} items"
     # Raise so the caller reports it: a silent failure meant the message looked
     # perfect, the ledger marked the reel done, and it was never retried.
     raise RuntimeError(f"Notion save failed: {res.get('error') or 'unknown error'}")
@@ -1321,16 +1335,19 @@ def _owner_chat() -> int | None:
 
 
 async def _take_inbox(bot) -> None:
-    """Links saved with the Afterscroll shortcut land in Notion as queued rows;
-    run each through the normal pipeline, exactly like a Telegram message."""
+    """Links shared from the phone (the app's share button or the shortcut, both
+    via api.py) wait in the app inbox; run each through the normal pipeline,
+    exactly like a Telegram message."""
     chat = _owner_chat()
-    if chat is None or not notion.enabled():
+    if chat is None:
         return
+    links = await asyncio.to_thread(appdb.take_inbox)
     try:
-        links = await asyncio.to_thread(notion.inbox_take)
+        # Old shortcut builds wrote queued rows into Notion; still honoured.
+        if notion.enabled():
+            links += await asyncio.to_thread(notion.inbox_take)
     except Exception as e:  # noqa: BLE001
-        log.warning("inbox check failed: %s", e)
-        return
+        log.warning("notion inbox check failed: %s", e)
     for url, note in links:
         log.info("inbox: %s", url)
         asyncio.create_task(process(bot, chat, url, force=False, user_note=note))
