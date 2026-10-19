@@ -1287,3 +1287,14 @@ def test_api_falls_back_to_the_clipboard_and_survives_broken_json(tmp_path):
         finally:
             srv.shutdown()
             os.environ.pop("APP_TOKEN", None)
+
+
+def test_links_shared_to_the_app_lean_real_life():
+    """Sharing to Afterscroll is itself the signal: the first mobility reel sent
+    that way was filed as an Explainer. The hint reaches both prompt paths;
+    a Telegram save (no flag) gets none."""
+    media = {"platform": "instagram", "kind": "video", "via_app": True}
+    assert folders.APP_HINT in bot.build_prompt("https://x/1", media)
+    assert folders.APP_HINT in bot._media_context("https://x/1", media)
+    assert folders.APP_HINT not in bot.build_prompt("https://x/1", {"platform": "instagram"})
+    assert folders.MOVE in folders.APP_HINT

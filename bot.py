@@ -126,6 +126,8 @@ def _media_context(url: str, media: dict, user_note: str = "") -> str:
     """
     ctx = [f"URL: {url}", f"Platform: {media.get('platform')}", f"Kind: {media.get('kind')}",
            f"Today's date: {datetime.date.today().isoformat()}"]
+    if media.get("via_app"):
+        ctx.append(folders.APP_HINT)
     if user_note:
         ctx.append(
             "WHY THE USER SAVED THIS (their own words — treat it as the primary lens for what "
@@ -157,6 +159,8 @@ def _media_context(url: str, media: dict, user_note: str = "") -> str:
 def build_prompt(url: str, media: dict, user_note: str = "") -> str:
     """Compose the agent prompt with pre-acquired media context."""
     ctx = [f"URL: {url}", f"Platform: {media.get('platform')}", f"Kind: {media.get('kind')}"]
+    if media.get("via_app"):
+        ctx.append(folders.APP_HINT)
     if user_note:
         ctx.append(
             "WHY THE USER SAVED THIS (their own words — treat it as the primary lens for what "
@@ -285,7 +289,8 @@ class Result:
 
 
 async def run_pipeline(url: str, force: bool = False, on_progress=None,
-                       media: dict | None = None, user_note: str = "") -> Result:
+                       media: dict | None = None, user_note: str = "",
+                       via_app: bool = False) -> Result:
     """Acquire → reason → persist.
 
     on_progress(stage) is an optional async callback fired at real milestones
@@ -321,6 +326,8 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
     # one post through two URLs. URL dedup is blind to it: this vault held the
     # same reel under two Instagram URLs, and one video saved from both
     # Instagram and TikTok. The fingerprint catches what the URL can't.
+    if via_app:
+        media["via_app"] = True  # read by both prompt builders (folders.APP_HINT)
     fp = textsig.sig(media.get("transcript") or media.get("caption") or "")
     if fp and not force:
         for other_url, entry in ledger.all_done().items():
@@ -954,7 +961,8 @@ async def deliver(bot, chat_id: int, html_msg: str, rich_md: str | None,
                                disable_web_page_preview=True)
 
 
-async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "") -> None:
+async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
+                  via_app: bool = False) -> None:
     """One stable status message, edited in place at real milestones (no flaky drafts).
 
     Placeholder → "got transcript" → final note — a single message edited via
@@ -985,7 +993,8 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "")
             if mid and stage == "acquired":
                 await _edit_rich(chat_id, mid, _status_payload("✍️ Got it — writing your note…"))
 
-        res = await run_pipeline(url, force=force, on_progress=progress, user_note=user_note)
+        res = await run_pipeline(url, force=force, on_progress=progress, user_note=user_note,
+                                 via_app=via_app)
         release = not res.keep_queued
 
         # Replace the placeholder in place (no orphaned "Working…" message).
@@ -1365,7 +1374,7 @@ async def _take_inbox(bot, notion_too: bool = False) -> None:
         log.warning("notion inbox check failed: %s", e)
     for url, note in links:
         log.info("inbox: %s", url)
-        asyncio.create_task(process(bot, chat, url, force=False, user_note=note))
+        asyncio.create_task(process(bot, chat, url, force=False, user_note=note, via_app=True))
 
 
 async def _drain_pending(bot) -> None:

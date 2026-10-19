@@ -169,3 +169,17 @@ def safe_dirname(folder: str) -> str:
     Only path separators are unsafe in a directory name.
     """
     return normalize(folder).replace("/", "-")
+
+
+# Added to the agent's context when a link arrives through the Afterscroll app
+# (share button, shortcut, Paste link) rather than Telegram. Sharing to the app
+# IS the person saying "this is a real-life thing"; the first mobility reel sent
+# that way was filed as an Explainer because it also explained why.
+APP_HINT = (
+    "SAVED VIA THE AFTERSCROLL APP: the person shared this to their real-life app "
+    f"(things to {BUY.lower()}, places to {VISIT.lower()}, events to {ATTEND.lower()}, "
+    f"recipes to {COOK.lower()}, workouts to do). Choose a real-life category "
+    f"({', '.join(REAL_LIFE)}) whenever the content plausibly fits one — a mobility or "
+    f"exercise reel that shows moves is {MOVE} even if it also explains why they matter. "
+    "Use a knowledge category only if nothing in it can be bought, visited, attended, "
+    "cooked or done.")
