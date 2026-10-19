@@ -175,6 +175,11 @@ def ensure_columns(token: str, db: str) -> None:
             {"name": c, "color": COLORS[c]} for c in folders.FOLDERS]}}
     if have.get("Area") != "select":
         props["Area"] = {"select": {"options": [{"name": a} for a in topics.AREAS]}}
+    # The app's real-life screens read these two.
+    if "Details" not in have:
+        props["Details"] = {"rich_text": {}}
+    if "Clip" not in have:
+        props["Clip"] = {"files": {}}
     if props:
         notion._api(f"https://api.notion.com/v1/databases/{db}", token, "PATCH",
                     {"properties": props})

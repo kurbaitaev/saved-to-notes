@@ -34,6 +34,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandl
 import acquire
 import agent_openai
 import claude_login
+import clips
+import details
 import folders
 import ledger
 import notion
@@ -110,6 +112,7 @@ def _load_prompt() -> str:
     text = PROMPT_FILE.read_text()
     return (text.replace("{{FOLDER_LIST}}", " | ".join(folders.FOLDERS))
                 .replace("{{FOLDER_RULES}}", folders.RULES)
+                .replace("{{DETAILS_RULES}}", details.RULES)
                 .replace("{{TOPIC_RULES}}", topics.RULES)
                 .replace("{{REVIEW_RULES}}", review.RULES))
 
@@ -512,6 +515,9 @@ def _sanitize(obj: dict) -> dict:
     # Exactly one valid folder, always — it decides where the note is filed.
     obj["folder"] = folders.normalize(obj.get("folder"))
     obj["topics"] = topics.normalize_list(obj.get("topics"))
+    # Real-life saves carry the fields the app's screens need; knowledge
+    # notes carry none, so a stray details object can't leak into Notion.
+    obj["details"] = details.clean(obj["folder"], obj.get("details"))
     # Dropped unless it is really a question — the app shows this as a
     # prompt to answer, and a statement there reads as nonsense.
     obj["review_question"] = review.clean(obj.get("review_question"))
@@ -1041,6 +1047,9 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str,
          f"topics: [{topic_list}]",
          f"content_type: {obj.get('content_type', '')}", f"kind: {obj.get('kind', '')}",
          "status: inbox"]
+    if obj.get("details"):
+        # JSON is valid YAML, and one line keeps the frontmatter scannable.
+        L.append(f"details: {details.to_json(obj['details'])}")
     if obj.get("review_question"):
         L.append(f"review_question: {obj['review_question']}")
     L += ["---", "", f"# {title}", ""]
@@ -1129,7 +1138,16 @@ def _sync_notion(obj: dict, media: dict, url: str, transcript: str, date_iso: st
             # The page exists, so the ledger is right to say done — but the note
             # is incomplete and the user has to know.
             raise RuntimeError(f"Notion page saved but incomplete — {res['warning']}")
-        return f"🗂 Notion: 1 reel · {res['items']} items"
+        line = f"🗂 Notion: 1 reel · {res['items']} items"
+        if obj.get("folder") == folders.MOVE:
+            # Best-effort: the note is saved either way; the Move screen just
+            # shows the routine without a loop until a later backfill.
+            try:
+                line += " · " + clips.clip_for_page(url, res.get("page_id", ""), media.get("video_path"))
+            except Exception as e:  # noqa: BLE001
+                log.warning("clip for %s failed: %s", url, e)
+                line += " · no clip"
+        return line
     # Raise so the caller reports it: a silent failure meant the message looked
     # perfect, the ledger marked the reel done, and it was never retried.
     raise RuntimeError(f"Notion save failed: {res.get('error') or 'unknown error'}")

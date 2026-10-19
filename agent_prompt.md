@@ -111,6 +111,8 @@ quotes. Keep every field short — one sentence unless it's a list.
 
 {{FOLDER_RULES}}
 
+{{DETAILS_RULES}}
+
 {{TOPIC_RULES}}
 
 {{REVIEW_RULES}}
@@ -124,6 +126,7 @@ quotes. Keep every field short — one sentence unless it's a list.
   "topics": ["...", "..."],
   "content_type": "...",
   "kind": "video | carousel | article",
+  "details": {"name": null, "kind": null, "address": null, "city": null, "country": null, "why": null, "date": null, "time": null, "venue": null, "url": null, "brand": null, "price": null, "minutes": null, "servings": null, "ingredients": [], "body_area": null, "purpose": null, "moves": []},
   "author": "... or Author not clear",
   "quote": "exact verbatim hero quote, or Not clear from the Reel",
   "context": "",

@@ -1099,3 +1099,42 @@ def test_ghost_detection_reads_full_command_lines_on_linux(monkeypatch):
     monkeypatch.setattr(watchdog.subprocess, "run", fake_run)
     assert watchdog.ghost_bot_paths() == ["/gone/saved-to-notes/bot.py"]
     assert "-fa" in seen["cmd"]
+
+
+# --- real-life details (Afterscroll app) ---------------------------------
+
+import details  # noqa: E402
+
+
+def test_details_keep_only_what_the_category_uses():
+    raw = {"name": "Sightglass", "kind": "Cafe", "city": "SF", "date": "2026-11-01",
+           "moves": [{"name": "x"}], "ingredients": ["salt"], "minutes": "12"}
+    assert details.clean(folders.VISIT, raw) == {"name": "Sightglass", "kind": "cafe", "city": "SF"}
+    assert details.clean(folders.IDEA, raw) == {}, "knowledge notes carry no details"
+    assert details.clean(folders.MOVE, raw) == {"name": "Sightglass", "minutes": 12,
+                                                "moves": [{"name": "x"}]}
+
+
+def test_details_reject_malformed_dates_urls_and_moves():
+    d = details.clean(folders.ATTEND, {"name": "UFC", "date": "next Saturday", "time": "7pm",
+                                       "url": "ufc.com/tickets"})
+    assert d == {"name": "UFC"}, "the app parses date/time/url — junk must not reach it"
+    m = details.clean(folders.MOVE, {"moves": ["Cat-cow", {"dose": "8"}, {"name": "Squat", "dose": "8 reps"}]})
+    assert m["moves"] == [{"name": "Cat-cow"}, {"name": "Squat", "dose": "8 reps"}]
+    assert details.clean(folders.VISIT, None) == {}
+
+
+def test_details_json_always_fits_a_notion_cell_and_parses():
+    import json
+    big = {"name": "Stew", "ingredients": [f"{i} g of something long enough" for i in range(200)]}
+    s = details.to_json(big)
+    assert len(s) <= 2000
+    assert json.loads(s)["name"] == "Stew"
+
+
+def test_details_are_wired_into_prompt_schema_and_sanitize():
+    assert details.RULES in bot._load_prompt()
+    assert agent_openai.SCHEMA["properties"]["details"] is details.SCHEMA
+    obj = bot._sanitize({"folder": "Visit", "details": {"name": "Tartine", "city": "SF"}})
+    assert obj["details"] == {"name": "Tartine", "city": "SF"}
+    assert bot._sanitize({"folder": "Idea", "details": {"name": "x"}})["details"] == {}

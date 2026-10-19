@@ -15,6 +15,7 @@ import logging
 import os
 import urllib.request
 
+import details
 import folders
 import topics
 
@@ -321,6 +322,8 @@ def push_reel(obj: dict, source_url: str, date_iso: str,
     setp("Source", source_url)
     setp("Category", folders.normalize(obj.get("folder")))
     setp("Area", topics.area_of(obj.get("topics")))
+    if obj.get("details"):
+        setp("Details", details.to_json(obj["details"]))
     setp("Topics", topics.normalize_list(obj.get("topics")))
     setp("Review question", obj.get("review_question") or "")
     setp("Date", date_iso)
@@ -388,4 +391,5 @@ def push_reel(obj: dict, source_url: str, date_iso: str,
     warning = ""
     if len(children) > 100 and page_id:
         warning = _append_blocks(page_id, children[100:], token)
-    return {"created": 1, "items": len(items), "error": "", "warning": warning}
+    return {"created": 1, "items": len(items), "error": "", "warning": warning,
+            "page_id": page_id}

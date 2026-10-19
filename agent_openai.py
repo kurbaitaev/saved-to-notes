@@ -23,6 +23,7 @@ import os
 import pathlib
 import subprocess
 
+import details
 import folders
 import topics
 
@@ -84,6 +85,7 @@ SCHEMA = {
                      "tool_recommendation", "product_recommendation", "resource_list",
                      "story", "opinion", "other"]},
         "kind": {"type": "string", "enum": ["video", "carousel", "image", "article"]},
+        "details": details.SCHEMA,
         "author": {"type": ["string", "null"]},
         "quote": {"type": ["string", "null"]},
         "context": {"type": ["string", "null"]},
@@ -101,7 +103,7 @@ SCHEMA = {
         "description": {"type": "string"},
         "summary": {"type": "string"},
     },
-    "required": ["title", "folder", "topics", "content_type", "kind", "author", "quote",
+    "required": ["title", "folder", "topics", "content_type", "kind", "details", "author", "quote",
                  "context", "main_idea", "main_thought", "takeaway", "useful_for",
                  "points", "steps", "items", "slides", "why_save", "review_question", "tags",
                  "description", "summary"],
