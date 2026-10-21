@@ -433,8 +433,9 @@ def cmd_stats(force: bool, dry: bool, days: int) -> int:
                 if any(c in u for c in codes):
                     assign[gid] = rid
 
-    # 2) the model matches what is left (once per group: a "no match" is remembered)
-    open_groups = [g for g in groups if g not in assign]
+    # 2) the model matches what is left. Only a match is remembered: a "no" is
+    #    asked again next pass, because the same question can go either way.
+    open_groups = [g for g in groups if assign.get(g) not in rows]
     if open_groups:
         cands = [r for r in rows.values() if status_of(r) in MATCHABLE]
         reel_txt = "\n".join(
@@ -446,7 +447,10 @@ def cmd_stats(force: bool, dry: bool, days: int) -> int:
         ans = ask_claude(MATCH_PROMPT.format(reels=reel_txt, rows=row_txt))
         for i, g in enumerate(open_groups):
             rid = ans.get(str(i))
-            assign[g] = rid if rid in rows else None
+            if rid in rows:
+                assign[g] = rid
+            else:
+                assign.pop(g, None)
 
     # 3) a brand-new reel with no row gets one, so its views are not lost
     for g in open_groups:
@@ -462,6 +466,14 @@ def cmd_stats(force: bool, dry: bool, days: int) -> int:
                                                             "Notes": {"rich_text": rt("Добавлено ботом: опубликованный ролик без строки в Content.")}}})
                 rows[page["id"]] = page
                 assign[g] = page["id"]
+
+    # The log shows every decision, so a wrong match can be seen and fixed.
+    for g, variants in sorted(groups.items(), key=lambda kv: kv[1][0]["timestamp"]):
+        rid = assign.get(g)
+        target = text_of(rows[rid]["properties"]["Idea"])[:50] if rid in rows else "—"
+        print(f"  {variants[0]['timestamp'][:10]} @{variants[0].get('ownerUsername'):<12} "
+              f"{totals(variants)['views']:>7,} ×{len(variants)}  "
+              f"{(variants[0].get('caption') or '').replace(chr(10), ' ')[:55]!r} → {target}")
 
     # 4) write each row's totals across all its groups
     per_row: dict[str, list[dict]] = {}
