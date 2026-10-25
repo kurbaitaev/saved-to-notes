@@ -959,7 +959,7 @@ def test_queued_links_are_retried_without_a_restart(monkeypatch):
         async def send_message(self, chat_id, text):
             sent.append(text)
 
-    async def fake_process(bot_, chat_id, url, force, user_note=""):
+    async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False):
         processed.append(url)
 
     pend = {"https://a/": {"chat_id": 1}, "https://busy/": {"chat_id": 1}}
@@ -973,6 +973,7 @@ def test_queued_links_are_retried_without_a_restart(monkeypatch):
     monkeypatch.setattr(bot.ledger, "pending_attempt", fake_attempt)
     monkeypatch.setattr(bot.ledger, "get", lambda u: None)
     monkeypatch.setattr(bot, "process", fake_process)
+    monkeypatch.setattr(bot.appdb, "share_status", lambda u: None)
     monkeypatch.setattr(bot, "AUTH_FAILED_FLAG", pathlib.Path("/nonexistent/.auth_failed"))
     bot._in_flight.add("https://busy/")
     try:
@@ -1210,6 +1211,56 @@ def test_a_big_app_batch_runs_a_few_at_a_time(tmp_path):
         assert first == [f"https://www.instagram.com/reel/R{i}/" for i in range(3)]
         assert len(started) == 5 and bot._app_running == 0
         assert appdb.take_inbox() == []
+
+
+def test_an_app_link_that_ends_unsaved_leaves_sorting(tmp_path):
+    """A repost, a dead link or a failed agent run never reported to the app, so
+    its card said "Sorting" for a day. A retry of an app link stays an app link."""
+    import asyncio
+
+    async def nothing(*a, **k):
+        return None
+
+    endings = {"https://www.instagram.com/reel/REPOST/": bot.Result("♻️", outcome=bot.PERMANENT, share="duplicate"),
+               "https://www.instagram.com/reel/DEAD/": bot.Result("❌", outcome=bot.PERMANENT),
+               "https://www.instagram.com/reel/NOJSON/": bot.Result("⚠️", outcome=bot.RETRYABLE)}
+
+    async def fake_pipeline(url, **k):
+        return endings[url]
+
+    class FakeBot:
+        async def send_message(self, *a, **k):
+            pass
+
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        for name, fake in [("run_pipeline", fake_pipeline), ("_send_rich_id", nothing),
+                           ("_edit_rich", nothing), ("deliver", nothing)]:
+            st.enter_context(patched(bot, name, fake))
+        st.enter_context(patched(bot.ledger, "pending_add", lambda *a: None))
+        st.enter_context(patched(bot.ledger, "pending_remove", lambda *a: None))
+        for url in endings:
+            asyncio.run(bot.process(FakeBot(), 1, url, force=False, via_app=True))
+        assert [appdb.share_status(u) for u in endings] == ["duplicate", "failed", "failed"]
+        assert appdb.share_status("https://www.instagram.com/reel/NEVER-SHARED/") is None
+
+        # The 30-minute retry of the failed app link goes back through the app path.
+        seen = {}
+
+        async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False):
+            seen[url] = via_app
+
+        st.enter_context(patched(bot, "process", fake_process))
+        st.enter_context(patched(bot.ledger, "pending_all", lambda: {
+            "https://www.instagram.com/reel/NOJSON/": {"chat_id": 1},
+            "https://t.me/telegram-only/": {"chat_id": 1}}))
+        st.enter_context(patched(bot.ledger, "pending_attempt", lambda u: 1))
+        st.enter_context(patched(bot.ledger, "get", lambda u: None))
+        st.enter_context(patched(bot, "AUTH_FAILED_FLAG", pathlib.Path("/nonexistent/.auth_failed")))
+
+        asyncio.run(bot._drain_pending(FakeBot()))
+        assert seen == {"https://www.instagram.com/reel/NOJSON/": True, "https://t.me/telegram-only/": False}
 
 
 def test_move_cuts_are_validated_before_cutting():

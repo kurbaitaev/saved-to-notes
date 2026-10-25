@@ -187,6 +187,13 @@ def share_done(url: str, status: str, category: str = "", title: str = "") -> No
                   (url, time.time(), status, category, title))
 
 
+def share_status(url: str) -> str | None:
+    """The app's status for a link, or None when it wasn't shared from the app."""
+    with _db() as c:
+        r = c.execute("select status from shares where url=?", (url,)).fetchone()
+    return r["status"] if r else None
+
+
 def recent_shares(hours: int = 24, limit: int = 5) -> list[dict]:
     with _db() as c:
         return [dict(r) for r in c.execute(

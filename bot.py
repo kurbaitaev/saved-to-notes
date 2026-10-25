@@ -277,8 +277,10 @@ class Result:
     """
 
     def __init__(self, html_msg: str, rich_md: str | None = None,
-                 blocks: dict | None = None, outcome: str = RETRYABLE):
+                 blocks: dict | None = None, outcome: str = RETRYABLE, share: str = ""):
         self.html, self.rich_md, self.blocks, self.outcome = html_msg, rich_md, blocks, outcome
+        # What the app shows for a link that wasn't saved; empty means "failed".
+        self.share = share
 
     @property
     def saved(self) -> bool:
@@ -343,7 +345,7 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
                     f"saved {entry.get('ts', '')[:10]}.\n"
                     f"Original: {html.escape(other_url)}\n\n"
                     "Send /force with this link if you want a second note anyway.",
-                    None, None, PERMANENT)
+                    None, None, PERMANENT, share="duplicate")
 
     if on_progress:
         await on_progress("acquired")
@@ -1007,6 +1009,11 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
         res = await run_pipeline(url, force=force, on_progress=progress, user_note=user_note,
                                  via_app=via_app)
         release = not res.keep_queued
+        if via_app and not res.saved:
+            # Only the saved paths report to the app themselves. A repost, a
+            # dead link or an agent with no JSON used to leave the card on
+            # "Sorting" for a day — 3 of Muse's first 196 links did.
+            appdb.share_done(norm, res.share or "failed")
 
         # Replace the placeholder in place (no orphaned "Working…" message).
         # Native blocks first, then rich HTML, then a plain fresh send.
@@ -1466,7 +1473,10 @@ async def _drain_pending(bot) -> None:
             log.info("retrying queued link %s", url)
             try:
                 await bot.send_message(chat_id, "↻ Retrying a link that didn't finish earlier…")
-                await process(bot, chat_id, url, force=True, user_note=rec.get("note", ""))
+                # A retried app link must report back to the app too, or a
+                # retry that succeeds leaves its card on "failed".
+                await process(bot, chat_id, url, force=True, user_note=rec.get("note", ""),
+                              via_app=appdb.share_status(url) is not None)
             except Exception as e:  # noqa: BLE001
                 # Leave it pending: pending_attempt caps this at MAX_RESUME_ATTEMPTS,
                 # which must stay the only give-up path.
