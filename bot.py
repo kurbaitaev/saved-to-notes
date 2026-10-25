@@ -1373,6 +1373,11 @@ def _owner_chat() -> int | None:
 
 
 INBOX_EVERY_S = 3
+# Telegram links run one by one; app links each got their own task, so a batch
+# of 40 meant 40 downloads and agent runs at once. Links past this many wait in
+# the inbox folder — on disk, so a restart while they wait loses nothing.
+APP_PARALLEL = int(os.environ.get("APP_PARALLEL", "3"))
+_app_running = 0
 
 
 async def _inbox_loop(bot) -> None:
@@ -1388,13 +1393,24 @@ async def _take_inbox(bot) -> None:
     """Links shared from the phone (the app's share button or the shortcut, both
     via api.py) wait in the app inbox; run each through the normal pipeline,
     exactly like a Telegram message."""
+    global _app_running
     chat = _owner_chat()
-    if chat is None:
+    free = APP_PARALLEL - _app_running
+    if chat is None or free <= 0:
         return
-    links = await asyncio.to_thread(appdb.take_inbox)
+    links = await asyncio.to_thread(appdb.take_inbox, free)
     for url, note in links:
         log.info("inbox: %s", url)
-        asyncio.create_task(process(bot, chat, url, force=False, user_note=note, via_app=True))
+        _app_running += 1
+        asyncio.create_task(_run_app_link(bot, chat, url, note))
+
+
+async def _run_app_link(bot, chat: int, url: str, note: str) -> None:
+    global _app_running
+    try:
+        await process(bot, chat, url, force=False, user_note=note, via_app=True)
+    finally:
+        _app_running -= 1
 
 
 async def _drain_pending(bot) -> None:

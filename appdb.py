@@ -118,12 +118,13 @@ def enqueue(url: str, note: str = "") -> pathlib.Path:
     return p
 
 
-def take_inbox() -> list[tuple[str, str]]:
-    """Claim every queued link (oldest first) and delete its file."""
+def take_inbox(limit: int | None = None) -> list[tuple[str, str]]:
+    """Claim up to `limit` queued links (oldest first; all when None) and
+    delete their files. The rest stay on disk, so a restart loses none."""
     if not INBOX.exists():
         return []
     out = []
-    for p in sorted(INBOX.glob("*.json")):
+    for p in sorted(INBOX.glob("*.json"))[:limit]:
         try:
             d = json.loads(p.read_text())
         except (OSError, ValueError):

@@ -1177,6 +1177,41 @@ def test_app_inbox_is_claimed_once_and_skips_junk(tmp_path):
         assert appdb.take_inbox() == []
 
 
+def test_a_big_app_batch_runs_a_few_at_a_time(tmp_path):
+    """Muse can POST 40 links at once; only APP_PARALLEL may run, the rest wait on disk."""
+    import asyncio
+    started, gate = [], asyncio.Event()
+
+    async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False):
+        started.append(url)
+        await gate.wait()
+
+    async def run():
+        for _ in range(4):  # inbox ticks while the first batch is still running
+            await bot._take_inbox(None)
+            await asyncio.sleep(0)
+        first = list(started)
+        gate.set()
+        for _ in range(10):
+            await asyncio.sleep(0)
+        await bot._take_inbox(None)
+        await asyncio.sleep(0)
+        return first
+
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        st.enter_context(patched(bot, "process", fake_process))
+        st.enter_context(patched(bot, "_owner_chat", lambda: 1))
+        st.enter_context(patched(bot, "APP_PARALLEL", 3))
+        for i in range(5):
+            appdb.enqueue(f"https://www.instagram.com/reel/R{i}/")
+        first = asyncio.run(run())
+        assert first == [f"https://www.instagram.com/reel/R{i}/" for i in range(3)]
+        assert len(started) == 5 and bot._app_running == 0
+        assert appdb.take_inbox() == []
+
+
 def test_move_cuts_are_validated_before_cutting():
     raw = [{"name": "Hip flexor", "start": 0.5, "end": 2.5},
            {"name": "Too short", "start": 3.0, "end": 3.2},
