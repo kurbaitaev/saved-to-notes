@@ -1245,6 +1245,7 @@ def test_xfeed_records_the_past_then_hands_over_only_new_bookmarks(tmp_path):
         assert xfeed.run(str(db_path)) == 1
         assert appdb.take_inbox() == [("https://x.com/HyperFrames_/status/102", "", "x")]
         assert xfeed.run(str(db_path)) == 0  # nothing twice
+        assert xfeed.run(str(db_path), only="999") == 0  # not in the importer's database
         assert xfeed.run(str(db_path), only="100") == 1  # a test, or one that was missed
         assert appdb.take_inbox() == [("https://x.com/old/status/100", "", "x")]
         assert xfeed.run(str(db_path), backfill=True) == 1  # 101, the only one left from before

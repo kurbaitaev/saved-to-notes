@@ -98,7 +98,8 @@ def run(db_path: str, only: str | None = None, backfill: bool = False, dry_run: 
     seen = state["seen"]
     have = saved_ids()
     handed = 0
-    for pid, url in bookmarks(db_path):
+    rows = dict(bookmarks(db_path))
+    for pid, url in rows.items():
         if only and pid != only:
             if first:  # an --only test as the very first run still records the rest
                 seen.setdefault(pid, {"url": url, "how": "before", "at": now})
@@ -118,7 +119,7 @@ def run(db_path: str, only: str | None = None, backfill: bool = False, dry_run: 
             appdb.enqueue(url, source=SOURCE)
             seen[pid] = {"url": url, "how": "handed", "at": now}
         handed += 1
-    if only and not any(p == only for p in seen):
+    if only and only not in rows:
         log.warning("no bookmark %s in the importer's database", only)
     if not dry_run:
         _save_state(state)
