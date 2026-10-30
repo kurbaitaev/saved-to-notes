@@ -1,0 +1,10 @@
+[Unit]
+Description=saved-to-notes: hand new X bookmarks to the bot
+
+[Service]
+Type=oneshot
+WorkingDirectory=__DIR__
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=__PYTHON__ __DIR__/xfeed.py
+StandardOutput=append:__DIR__/logs/xfeed.out.log
+StandardError=append:__DIR__/logs/xfeed.err.log

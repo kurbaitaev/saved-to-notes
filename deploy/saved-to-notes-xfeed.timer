@@ -1,0 +1,9 @@
+[Unit]
+Description=Pick up new X bookmarks every hour (the importer runs nightly and on "Sync now")
+
+[Timer]
+OnCalendar=*:20
+Persistent=true
+
+[Install]
+WantedBy=timers.target

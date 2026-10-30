@@ -35,6 +35,7 @@ for unit in saved-to-notes.service \
             saved-to-notes-vaultsync.service saved-to-notes-vaultsync.timer \
             saved-to-notes-content-drafts.service saved-to-notes-content-drafts.timer \
             saved-to-notes-content-stats.service saved-to-notes-content-stats.timer \
+            saved-to-notes-xfeed.service saved-to-notes-xfeed.timer \
             afterscroll-api.service; do
   render "$HERE/deploy/$unit" > "$UNIT_DIR/$unit"
 done
@@ -46,6 +47,7 @@ systemctl --user enable --now saved-to-notes-digest.timer
 systemctl --user enable --now saved-to-notes-vaultsync.timer
 systemctl --user enable --now saved-to-notes-content-drafts.timer
 systemctl --user enable --now saved-to-notes-content-stats.timer
+systemctl --user enable --now saved-to-notes-xfeed.timer
 # The app's API needs a token; make one the first time (never printed).
 grep -q '^APP_TOKEN=.' "$HERE/.env" 2>/dev/null \
   || echo "APP_TOKEN=$("$PYTHON" -c 'import secrets;print(secrets.token_urlsafe(32))')" >> "$HERE/.env"

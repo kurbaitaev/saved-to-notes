@@ -1174,8 +1174,82 @@ def test_app_inbox_is_claimed_once_and_skips_junk(tmp_path):
             st.enter_context(p)
         appdb.enqueue("https://www.instagram.com/reel/A/", "for Sunday")
         appdb.enqueue("not a link")
-        assert appdb.take_inbox() == [("https://www.instagram.com/reel/A/", "for Sunday")]
+        assert appdb.take_inbox() == [("https://www.instagram.com/reel/A/", "for Sunday", "app")]
         assert appdb.take_inbox() == []
+
+
+def test_an_inbox_link_keeps_where_it_came_from(tmp_path):
+    """A file queued before `source` existed is an app share; a feed's link says so."""
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        appdb.INBOX.mkdir(parents=True)
+        (appdb.INBOX / "1.json").write_text(json.dumps({"url": "https://www.instagram.com/reel/OLD/", "note": ""}))
+        appdb.enqueue("https://x.com/a/status/2", source="x")
+        assert appdb.take_inbox() == [("https://www.instagram.com/reel/OLD/", "", "app"),
+                                      ("https://x.com/a/status/2", "", "x")]
+
+
+def test_an_x_bookmark_is_a_plain_save_not_an_app_share(tmp_path):
+    """The app hint steers a save toward Buy/Visit and skips checking links —
+    wrong for an X thread, which is knowledge like a link sent in Telegram."""
+    import asyncio
+    calls = {}
+
+    async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False):
+        calls[url] = via_app
+
+    async def run():
+        await bot._take_inbox(None)
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        st.enter_context(patched(bot, "process", fake_process))
+        st.enter_context(patched(bot, "_owner_chat", lambda: 1))
+        appdb.enqueue("https://www.instagram.com/reel/A/")
+        appdb.enqueue("https://x.com/a/status/2", source="x")
+        asyncio.run(run())
+        assert calls == {"https://www.instagram.com/reel/A/": True, "https://x.com/a/status/2": False}
+
+
+def test_xfeed_records_the_past_then_hands_over_only_new_bookmarks(tmp_path):
+    """Turning the feed on must not send 270 old bookmarks at once, and a post
+    already sent to the bot by hand must not get a second note."""
+    import sqlite3
+    import xfeed
+
+    db_path = tmp_path / "reader.sqlite"
+    db = sqlite3.connect(db_path)
+    db.execute("CREATE TABLE notes (id TEXT PRIMARY KEY, raw TEXT NOT NULL, day TEXT NOT NULL, note TEXT, page TEXT)")
+
+    def add(pid, author, day):
+        db.execute("INSERT INTO notes(id,raw,day) VALUES(?,?,?)", (pid, json.dumps({"id": pid, "author": author}), day))
+        db.commit()
+
+    add("100", "old", "2026-09-06")
+    add("101", "old", "2026-09-07")
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        st.enter_context(patched(xfeed, "STATE", tmp_path / "xfeed_state.json"))
+        st.enter_context(patched(xfeed, "saved_ids", lambda: {"111"}))
+        assert xfeed.run(str(db_path)) == 0  # first run: only records
+        assert appdb.take_inbox() == []
+        add("102", "HyperFrames_", "2026-10-30")
+        add("111", "sentbyhand", "2026-10-30")
+        assert xfeed.run(str(db_path), dry_run=True) == 1
+        assert appdb.take_inbox() == []
+        assert xfeed.run(str(db_path)) == 1
+        assert appdb.take_inbox() == [("https://x.com/HyperFrames_/status/102", "", "x")]
+        assert xfeed.run(str(db_path)) == 0  # nothing twice
+        assert xfeed.run(str(db_path), only="100") == 1  # a test, or one that was missed
+        assert appdb.take_inbox() == [("https://x.com/old/status/100", "", "x")]
+        assert xfeed.run(str(db_path), backfill=True) == 1  # 101, the only one left from before
+        assert appdb.take_inbox() == [("https://x.com/old/status/101", "", "x")]
+    db.close()
 
 
 def test_a_big_app_batch_runs_a_few_at_a_time(tmp_path):
@@ -1298,7 +1372,7 @@ def test_api_requires_the_token_and_queues_shared_links(tmp_path):
             assert call("GET", "/v1/health", token="")[0] == 200
             assert call("GET", "/v1/saves", token="wrong")[0] == 401
             code, _ = call("POST", "/v1/save", json.dumps({"url": "Look https://instagram.com/reel/B/ wow"}))
-            assert code == 202 and appdb.take_inbox() == [("https://instagram.com/reel/B/", "")]
+            assert code == 202 and appdb.take_inbox() == [("https://instagram.com/reel/B/", "", "app")]
             assert call("POST", "/v1/save", json.dumps({"url": "no link"}))[0] == 400
             sid = "0123456789ab"
             (appdb.CLIPS / sid).mkdir(parents=True)

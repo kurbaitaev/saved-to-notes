@@ -1399,23 +1399,25 @@ async def _inbox_loop(bot) -> None:
 async def _take_inbox(bot) -> None:
     """Links shared from the phone (the app's share button or the shortcut, both
     via api.py) wait in the app inbox; run each through the normal pipeline,
-    exactly like a Telegram message."""
+    exactly like a Telegram message. Feeds (xfeed.py) use the same inbox, but
+    their links are plain saves: the app hint would push an X thread toward
+    Buy or Visit and skip checking its links."""
     global _app_running
     chat = _owner_chat()
     free = APP_PARALLEL - _app_running
     if chat is None or free <= 0:
         return
     links = await asyncio.to_thread(appdb.take_inbox, free)
-    for url, note in links:
-        log.info("inbox: %s", url)
+    for url, note, source in links:
+        log.info("inbox (%s): %s", source, url)
         _app_running += 1
-        asyncio.create_task(_run_app_link(bot, chat, url, note))
+        asyncio.create_task(_run_app_link(bot, chat, url, note, via_app=source == "app"))
 
 
-async def _run_app_link(bot, chat: int, url: str, note: str) -> None:
+async def _run_app_link(bot, chat: int, url: str, note: str, via_app: bool = True) -> None:
     global _app_running
     try:
-        await process(bot, chat, url, force=False, user_note=note, via_app=True)
+        await process(bot, chat, url, force=False, user_note=note, via_app=via_app)
     finally:
         _app_running -= 1
 

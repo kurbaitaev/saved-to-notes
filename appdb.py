@@ -108,19 +108,21 @@ def all_saves() -> list[dict]:
     return rows
 
 
-def enqueue(url: str, note: str = "") -> pathlib.Path:
-    """A link shared from the phone, waiting for the bot to process it."""
+def enqueue(url: str, note: str = "", source: str = "app") -> pathlib.Path:
+    """A link waiting for the bot: shared from the phone ("app"), or handed
+    over by a feed such as the X bookmarks import ("x", xfeed.py)."""
     INBOX.mkdir(parents=True, exist_ok=True)
     p = INBOX / f"{time.time_ns()}.json"
     tmp = p.with_suffix(".tmp")
-    tmp.write_text(json.dumps({"url": url, "note": note}))
+    tmp.write_text(json.dumps({"url": url, "note": note, "source": source}))
     tmp.rename(p)  # atomic: the bot never reads a half-written file
     return p
 
 
-def take_inbox(limit: int | None = None) -> list[tuple[str, str]]:
-    """Claim up to `limit` queued links (oldest first; all when None) and
-    delete their files. The rest stay on disk, so a restart loses none."""
+def take_inbox(limit: int | None = None) -> list[tuple[str, str, str]]:
+    """Claim up to `limit` queued links (oldest first; all when None) as
+    (url, note, source) and delete their files. The rest stay on disk, so a
+    restart loses none. Files from before `source` existed are app shares."""
     if not INBOX.exists():
         return []
     out = []
@@ -132,7 +134,7 @@ def take_inbox(limit: int | None = None) -> list[tuple[str, str]]:
         p.unlink(missing_ok=True)
         url = str(d.get("url") or "").strip()
         if url.startswith(("http://", "https://")):
-            out.append((url, str(d.get("note") or "").strip()))
+            out.append((url, str(d.get("note") or "").strip(), str(d.get("source") or "app")))
     return out
 
 
