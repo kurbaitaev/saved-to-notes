@@ -959,7 +959,7 @@ def test_queued_links_are_retried_without_a_restart(monkeypatch):
         async def send_message(self, chat_id, text):
             sent.append(text)
 
-    async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False):
+    async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False, source="telegram"):
         processed.append(url)
 
     pend = {"https://a/": {"chat_id": 1}, "https://busy/": {"chat_id": 1}}
@@ -1196,7 +1196,7 @@ def test_an_x_bookmark_is_a_plain_save_not_an_app_share(tmp_path):
     import asyncio
     calls = {}
 
-    async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False):
+    async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False, source="telegram"):
         calls[url] = via_app
 
     async def run():
@@ -1258,7 +1258,7 @@ def test_a_big_app_batch_runs_a_few_at_a_time(tmp_path):
     import asyncio
     started, gate = [], asyncio.Event()
 
-    async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False):
+    async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False, source="telegram"):
         started.append(url)
         await gate.wait()
 
@@ -1323,7 +1323,7 @@ def test_an_app_link_that_ends_unsaved_leaves_sorting(tmp_path):
         # The 30-minute retry of the failed app link goes back through the app path.
         seen = {}
 
-        async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False):
+        async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False, source="telegram"):
             seen[url] = via_app
 
         st.enter_context(patched(bot, "process", fake_process))
@@ -1336,6 +1336,79 @@ def test_an_app_link_that_ends_unsaved_leaves_sorting(tmp_path):
 
         asyncio.run(bot._drain_pending(FakeBot()))
         assert seen == {"https://www.instagram.com/reel/NOJSON/": True, "https://t.me/telegram-only/": False}
+
+
+def test_a_save_that_did_not_come_from_telegram_is_quiet_there(tmp_path, monkeypatch):
+    """Muse's first batch put 202 full notes in the chat in one day. App, Muse
+    and X saves now say nothing in Telegram unless the link can never be saved;
+    a link sent in Telegram still gets its note back."""
+    import asyncio
+    monkeypatch.setenv("RICH_MESSAGE", "1")
+    told = []
+
+    async def fake_deliver(bot_, chat_id, html_msg, rich_md, blocks=None):
+        told.append(html_msg)
+
+    async def status(*a, **k):
+        told.append("status")
+        return 7
+
+    async def edit(chat_id, mid, payload):
+        told.append(payload)
+        return True
+
+    endings = {"https://x.com/a/status/1": bot.Result("note", outcome=bot.SAVED),
+               "https://x.com/a/status/2": bot.Result("♻️", outcome=bot.PERMANENT, share="duplicate"),
+               "https://x.com/a/status/3": bot.Result("⚠️ retry", outcome=bot.RETRYABLE),
+               "https://x.com/a/status/4": bot.Result("❌ deleted", outcome=bot.PERMANENT)}
+
+    async def fake_pipeline(url, **k):
+        if url.endswith("/5"):
+            raise RuntimeError("boom")
+        return endings.get(url) or bot.Result("note", outcome=bot.SAVED)
+
+    with contextlib.ExitStack() as st:
+        for p in _tmp_appdb(tmp_path):
+            st.enter_context(p)
+        for name, fake in [("run_pipeline", fake_pipeline), ("_send_rich_id", status),
+                           ("_edit_rich", edit), ("deliver", fake_deliver)]:
+            st.enter_context(patched(bot, name, fake))
+        st.enter_context(patched(bot.ledger, "pending_add", lambda *a: None))
+        st.enter_context(patched(bot.ledger, "pending_remove", lambda *a: None))
+        fake_bot = _FakeBot()
+        for url in list(endings) + ["https://x.com/a/status/5"]:
+            asyncio.run(bot.process(fake_bot, 1, url, force=False, source="x"))
+        asyncio.run(bot.process(fake_bot, 1, "https://www.instagram.com/reel/APP/", force=False,
+                                via_app=True, source="app"))
+        assert fake_bot.sent == []
+        assert told == ["X bookmark · https://x.com/a/status/4\n❌ deleted"]
+
+        told.clear()
+        asyncio.run(bot.process(fake_bot, 1, "https://www.instagram.com/reel/TG/", force=False))
+        assert told == ["status", "note"]
+
+
+def test_a_quiet_link_stays_quiet_when_it_is_retried(tmp_path):
+    """The ledger keeps where a queued link came from, so the 30-minute retry of
+    an X or app save doesn't announce itself in Telegram."""
+    import asyncio
+    _isolate_ledger(tmp_path)
+    bot.ledger.pending_add("https://x.com/a/status/9", 1, "", "x")
+    bot.ledger.pending_add("https://t.me/sent-here/", 1, "")
+    assert {u: r["source"] for u, r in bot.ledger.pending_all().items()} == {
+        "https://x.com/a/status/9": "x", "https://t.me/sent-here/": "telegram"}
+    seen, fake_bot = {}, _FakeBot()
+
+    async def fake_process(bot_, chat_id, url, force, user_note="", via_app=False, source="telegram"):
+        seen[url] = source
+
+    with contextlib.ExitStack() as st:
+        st.enter_context(patched(bot, "process", fake_process))
+        st.enter_context(patched(bot.appdb, "share_status", lambda u: None))
+        st.enter_context(patched(bot, "AUTH_FAILED_FLAG", pathlib.Path("/nonexistent/.auth_failed")))
+        asyncio.run(bot._drain_pending(fake_bot))
+    assert seen == {"https://x.com/a/status/9": "x", "https://t.me/sent-here/": "telegram"}
+    assert fake_bot.sent == ["↻ Retrying a link that didn't finish earlier…"]
 
 
 def test_move_cuts_are_validated_before_cutting():

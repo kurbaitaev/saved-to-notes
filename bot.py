@@ -973,13 +973,19 @@ async def deliver(bot, chat_id: int, html_msg: str, rich_md: str | None,
 
 
 async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
-                  via_app: bool = False) -> None:
+                  via_app: bool = False, source: str = "telegram") -> None:
     """One stable status message, edited in place at real milestones (no flaky drafts).
 
     Placeholder → "got transcript" → final note — a single message edited via
     editMessageText, so there's no 30s-draft expiry, flicker, or duplicate. The reel is
     marked pending for the duration; an interrupted run resumes on next startup.
+
+    Only a link sent in Telegram gets that reply. Links from the app, the
+    shortcut, Muse or a feed (`source` from the inbox) are quiet: Muse's first
+    batch put 202 full notes in the chat in one day, and the app already shows
+    each result. A quiet link speaks only when it is given up on.
     """
+    quiet = source != "telegram"
     norm = acquire.normalize_url(url)
     # The startup resume task runs outside Telegram's update lock, so the same
     # reel could be processed twice at once → two agent runs, two Notion rows,
@@ -988,7 +994,7 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
         log.info("already processing %s — skipping duplicate", norm)
         return
     _in_flight.add(norm)
-    ledger.pending_add(norm, chat_id, user_note)
+    ledger.pending_add(norm, chat_id, user_note, source)
     if via_app:
         appdb.share_started(norm)
     mid = None
@@ -998,9 +1004,10 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
     release = False
     try:
         rich = os.environ.get("RICH_MESSAGE", "1") == "1"
-        mid = await _send_rich_id(chat_id, _status_payload("⏳ Working on your reel…")) if rich else None
-        if mid is None:
-            await bot.send_message(chat_id, f"⏳ Processing {url[:80]}…")
+        if not quiet:
+            mid = await _send_rich_id(chat_id, _status_payload("⏳ Working on your reel…")) if rich else None
+            if mid is None:
+                await bot.send_message(chat_id, f"⏳ Processing {url[:80]}…")
 
         async def progress(stage: str) -> None:
             if mid and stage == "acquired":
@@ -1015,9 +1022,17 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
             # "Sorting" for a day — 3 of Muse's first 196 links did.
             appdb.share_done(norm, res.share or "failed")
 
+        if quiet:
+            # A saved note, a duplicate and a failure that will retry say
+            # nothing; a link that can never be saved says so once. A retry
+            # that runs out of attempts is reported by _drain_pending.
+            log.info("quiet (%s): %s → %s", source, url, res.share or res.outcome)
+            if res.outcome == PERMANENT and res.share != "duplicate":
+                await deliver(bot, chat_id, f"{_SOURCE_LABEL.get(source, source)} · "
+                              f"{html.escape(url)}\n{res.html}", None, None)
         # Replace the placeholder in place (no orphaned "Working…" message).
         # Native blocks first, then rich HTML, then a plain fresh send.
-        if not (mid and await _edit_rich(chat_id, mid, res.blocks or res.rich_md or res.html)):
+        elif not (mid and await _edit_rich(chat_id, mid, res.blocks or res.rich_md or res.html)):
             await deliver(bot, chat_id, res.html, res.rich_md, res.blocks)
     except Exception as e:  # noqa: BLE001
         # Anything unhandled must still close the loop — otherwise the user is
@@ -1025,6 +1040,8 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
         log.error("processing failed for %s", url, exc_info=e)
         if via_app:
             appdb.share_done(norm, "failed")
+        if quiet:
+            return  # still queued: retried, and reported if it runs out of attempts
         tail = ("The note itself was saved — only the message failed."
                 if release else "It stays queued and will retry — or send the link again now.")
         err = f"❌ That link broke while processing:\n{type(e).__name__}: {e}\n\n{tail}"
@@ -1396,6 +1413,9 @@ async def _inbox_loop(bot) -> None:
         await asyncio.sleep(INBOX_EVERY_S)
 
 
+_SOURCE_LABEL = {"app": "From the app", "x": "X bookmark"}
+
+
 async def _take_inbox(bot) -> None:
     """Links shared from the phone (the app's share button or the shortcut, both
     via api.py) wait in the app inbox; run each through the normal pipeline,
@@ -1411,13 +1431,14 @@ async def _take_inbox(bot) -> None:
     for url, note, source in links:
         log.info("inbox (%s): %s", source, url)
         _app_running += 1
-        asyncio.create_task(_run_app_link(bot, chat, url, note, via_app=source == "app"))
+        asyncio.create_task(_run_app_link(bot, chat, url, note, source))
 
 
-async def _run_app_link(bot, chat: int, url: str, note: str, via_app: bool = True) -> None:
+async def _run_app_link(bot, chat: int, url: str, note: str, source: str = "app") -> None:
     global _app_running
     try:
-        await process(bot, chat, url, force=False, user_note=note, via_app=via_app)
+        await process(bot, chat, url, force=False, user_note=note, via_app=source == "app",
+                      source=source)
     finally:
         _app_running -= 1
 
@@ -1474,11 +1495,15 @@ async def _drain_pending(bot) -> None:
                 continue
             log.info("retrying queued link %s", url)
             try:
-                await bot.send_message(chat_id, "↻ Retrying a link that didn't finish earlier…")
                 # A retried app link must report back to the app too, or a
                 # retry that succeeds leaves its card on "failed".
+                via_app = appdb.share_status(url) is not None
+                # Queued before the ledger kept a source: an app share is still one.
+                source = rec.get("source") or ("app" if via_app else "telegram")
+                if source == "telegram":
+                    await bot.send_message(chat_id, "↻ Retrying a link that didn't finish earlier…")
                 await process(bot, chat_id, url, force=True, user_note=rec.get("note", ""),
-                              via_app=appdb.share_status(url) is not None)
+                              via_app=via_app, source=source)
             except Exception as e:  # noqa: BLE001
                 # Leave it pending: pending_attempt caps this at MAX_RESUME_ATTEMPTS,
                 # which must stay the only give-up path.

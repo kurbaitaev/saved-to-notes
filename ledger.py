@@ -94,14 +94,15 @@ def _load_pending() -> dict:
     return _load_file(_PENDING)
 
 
-def pending_add(url: str, chat_id: int, note: str = "") -> None:
+def pending_add(url: str, chat_id: int, note: str = "", source: str = "telegram") -> None:
     with _exclusive():
         d = _load_pending()
         rec = d.get(url) or {}
         # `note` is the user's own reason for saving; it must survive a restart
         # or the recovered note loses the intent it was meant to be written for.
+        # `source` too: a retried app or X link must stay quiet in Telegram.
         d[url] = {"chat_id": chat_id, "attempts": rec.get("attempts", 0),
-                  "note": note or rec.get("note", "")}
+                  "note": note or rec.get("note", ""), "source": source}
         _save_file(_PENDING, d)
 
 
