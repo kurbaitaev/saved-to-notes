@@ -42,6 +42,7 @@ AFTER = {
 _topics_on: bool | None = None
 _topics_checked = 0.0
 RECHECK_S = 600  # how often to ask Telegram again while topics are off
+_icons: dict | None = None
 
 
 def _owner() -> int | None:
@@ -82,14 +83,30 @@ async def topics_on() -> bool:
     return _topics_on
 
 
+async def _icon_id(emoji: str) -> str | None:
+    """Telegram's topic icon for this emoji. It goes on the topic, not in its name,
+    where Telegram would draw it a second time. Only its own set of icons is allowed."""
+    global _icons
+    if _icons is None:
+        r = await call("getForumTopicIconStickers", {})
+        if not r.get("ok"):
+            return None
+        _icons = {s.get("emoji", "").replace("️", ""): s.get("custom_emoji_id")
+                  for s in r.get("result") or []}
+    return _icons.get(emoji.replace("️", ""))
+
+
 async def thread_for(tid: str) -> int | None:
     """The topic's thread in the owner's chat, created the first time it's needed."""
     have = cards.thread_of(tid)
     if have or not await topics_on():
         return have
     t = cards.topic(tid) or {}
-    name = f"{t.get('emoji', '')} {t.get('name', tid)}".strip()[:128]
-    r = await call("createForumTopic", {"chat_id": _owner(), "name": name})
+    params = {"chat_id": _owner(), "name": t.get("name", tid)[:128]}
+    icon = await _icon_id(t.get("emoji", ""))
+    if icon:
+        params["icon_custom_emoji_id"] = icon
+    r = await call("createForumTopic", params)
     thread = (r.get("result") or {}).get("message_thread_id")
     if thread:
         cards.set_thread(tid, thread)

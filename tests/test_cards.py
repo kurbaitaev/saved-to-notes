@@ -147,6 +147,8 @@ class _Calls:
             return {"ok": True, "result": {"has_topics_enabled": True}}
         if method == "createForumTopic":
             return {"ok": True, "result": {"message_thread_id": 77}}
+        if method == "getForumTopicIconStickers":
+            return {"ok": True, "result": [{"emoji": "🎬", "custom_emoji_id": "icon-film"}]}
         return {"ok": True, "result": {"message_id": 500 + len(self.made)}}
 
 
@@ -183,6 +185,17 @@ def test_cards_wait_while_topics_are_off(tmp_path):
     cid = cards.propose(_item(1))
     assert asyncio.run(tgcards.pump()) == 0
     assert cards.get(cid)["status"] == "queued" and not calls.made
+
+
+def test_a_topic_has_one_icon_and_no_emoji_in_its_name(tmp_path):
+    _setup(tmp_path)
+    calls = _Calls()
+    tgcards.call, tgcards._topics_on, tgcards._icons = calls, None, None
+    asyncio.run(tgcards.thread_for("content"))
+    asyncio.run(tgcards.thread_for("lak"))  # no emoji in its config: Telegram draws its own
+    content, lak = [p for m, p in calls.made if m == "createForumTopic"]
+    assert content["name"] == "Content" and content["icon_custom_emoji_id"] == "icon-film"
+    assert lak["name"] == "Lak" and "icon_custom_emoji_id" not in lak
 
 
 def test_a_reply_naming_another_project_moves_the_card(tmp_path):
