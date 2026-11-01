@@ -1,9 +1,9 @@
 {
-  "_about": "Copy to app-data/cards.json and make it yours. topics: one Telegram topic per project; projects are Context Engine project ids; aliases are words that, in a note or a reply, point at this topic; folders are where you work on it (a Claude session started there gets its open cards). destinations: libraries a resource save can be added to, found by keywords.",
+  "_about": "Copy to app-data/cards.json and make it yours. topics: one Telegram topic per project; emoji is its icon and must be one Telegram allows for topics (getForumTopicIconStickers); projects are Context Engine project ids; aliases are words that, in a note or a reply, point at this topic; folders are where you work on it (a Claude session started there gets its open cards). destinations: libraries a resource save can be added to, found by keywords.",
   "topics": [
     {"id": "content", "name": "Content", "emoji": "🎬", "projects": ["content", "editing"],
      "aliases": ["content", "reel", "reels", "editing"], "folders": ["~/Workspace/Content"]},
-    {"id": "side", "name": "Side project", "emoji": "🧭", "projects": ["side"],
+    {"id": "side", "name": "Side project", "emoji": "💡", "projects": ["side"],
      "aliases": ["side project", "website"], "folders": ["~/Workspace/Side"]}
   ],
   "destinations": [
