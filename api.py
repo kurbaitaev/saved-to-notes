@@ -21,6 +21,7 @@ Stdlib only, on purpose: one person's saves, a handful of requests a day — a
 framework would be one more thing to upgrade on the server.
 """
 
+import contextlib
 import hmac
 import json
 import os
@@ -39,6 +40,8 @@ import cards  # noqa: E402
 PORT = int(os.environ.get("APP_API_PORT", "8791"))
 _CLIP = re.compile(r"^/v1/clips/([0-9a-f]{12})/((?:loop|move\d{1,2})\.(?:mp4|jpg))$")
 _CARD = re.compile(r"^/v1/cards/([0-9a-f]{12})$")
+# The shortcut's escaped note, which it puts first in its body (make_shortcut.py).
+_NOTE = re.compile(r'\s*\{\s*"note"\s*:\s*("(?:[^"\\\x00-\x1f]|\\.)*")')
 
 
 def load_env() -> None:
@@ -167,6 +170,11 @@ class Handler(BaseHTTPRequestHandler):
             # A shortcut splices clipboard text straight into its JSON, so a
             # caption with quotes or newlines breaks it — search the raw text.
             d = {"url": raw}
+            # Its note arrives escaped and first, so it survives that. Cut it
+            # off before the link search: a link inside the note isn't the save.
+            if m := _NOTE.match(raw):
+                with contextlib.suppress(ValueError):
+                    d = {"url": raw[m.end():], "note": json.loads(m.group(1))}
         # The shared item first; the clipboard ("clip") only when the sharing
         # app passed nothing — Instagram hands shortcuts an empty input.
         link = re.compile(r"https?://[^\s\"'<>\\]+")

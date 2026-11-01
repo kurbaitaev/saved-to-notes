@@ -217,6 +217,87 @@ def test_your_note_is_written_into_the_vault_note_apart_from_the_model(tmp_path)
     assert 'my_note: "for \\"subs\\" on reels"' in head  # JSON-quoted, so YAML-safe
 
 
+
+def _shortcut_body(note: str, shared: str, clip: str) -> str:
+    """The body the generated shortcut sends: its text template with each slot
+    filled the way Shortcuts fills it, the note run through its Replace Text
+    steps (NSRegularExpression, translated to Python's re)."""
+    import re
+
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools"))
+    import make_shortcut
+
+    acts = [(a["WFWorkflowActionIdentifier"].rsplit(".", 1)[-1], a["WFWorkflowActionParameters"])
+            for a in make_shortcut.build("https://example.test", "t")["WFWorkflowActions"]]
+    out = {p["UUID"]: clip for kind, p in acts if kind == "getclipboard"}
+    out |= {p["UUID"]: note for kind, p in acts if kind == "ask"}
+    for kind, p in acts:
+        if kind == "replace":
+            find = p["WFReplaceTextFind"].replace(r"\p{Cc}", r"\x00-\x1f\x7f-\x9f")
+            find = f"[{find[:-1]}]+" if find.endswith("+") and not find.startswith("[") else find
+            tmpl = p["WFReplaceTextReplace"]
+
+            def fill(m, tmpl=tmpl):  # template: "\x" is a literal x, "$n" is group n
+                return re.sub(r"\\(.)|\$(\d)", lambda t: t.group(1) or m.group(int(t.group(2))), tmpl)
+            out[p["UUID"]] = re.sub(find, fill, out[p["WFInput"]["Value"]["OutputUUID"]])
+    [text] = [p["WFTextActionText"]["Value"] for kind, p in acts if kind == "gettext"]
+    units = text["string"].encode("utf-16-le")
+    spots = sorted(((int(k.strip("{}").split(",")[0]), v) for k, v in text["attachmentsByRange"].items()),
+                   reverse=True)
+    for at, v in spots:  # right to left, so earlier offsets stay put
+        val = shared if v["Type"] == "ExtensionInput" else out[v["OutputUUID"]]
+        units = units[:at * 2] + val.encode("utf-16-le") + units[at * 2 + 2:]
+    return units.decode("utf-16-le")
+
+
+def test_a_note_from_the_phone_reaches_the_bot_as_your_words(tmp_path):
+    """The share button sends {"url", "note"}; the shortcut asks for the note and
+    splices it, escaped, into a text body. Both arrive as the note, verbatim."""
+    _setup(tmp_path)
+    old_inbox, appdb.INBOX = appdb.INBOX, tmp_path / "inbox"
+    cards.os.environ["APP_TOKEN"] = "t"
+    srv = ThreadingHTTPServer(("127.0.0.1", 0), api.Handler)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+
+    def post(body: str) -> int:
+        req = urllib.request.Request(f"http://127.0.0.1:{srv.server_address[1]}/v1/save",
+                                     data=body.encode(), headers={"Authorization": "Bearer t"})
+        with urllib.request.urlopen(req) as r:
+            return r.status
+    reel = "https://www.instagram.com/reel/N1/"
+    try:
+        assert post(json.dumps({"url": reel, "note": "for the gameplan site"})) == 202
+        assert appdb.take_inbox() == [(reel, "for the gameplan site", "app")]
+
+        assert post(_shortcut_body('music lib: the "drop" at 0:12\\ok\tnow', reel, "")) == 202
+        assert appdb.take_inbox() == [(reel, 'music lib: the "drop" at 0:12\\ok now', "app")]
+        assert post(_shortcut_body("", "", reel)) == 202  # Done with nothing typed
+        assert appdb.take_inbox() == [(reel, "", "app")]
+
+        # A stale clipboard with quotes and a newline breaks the JSON; the note
+        # still arrives, and a link inside it is not mistaken for the save.
+        broken = _shortcut_body("like https://other.example/x", reel, 'he said "wow"\nhi')
+        assert post(broken) == 202
+        assert appdb.take_inbox() == [(reel, "like https://other.example/x", "app")]
+    finally:
+        srv.shutdown()
+        appdb.INBOX = old_inbox
+
+
+def test_the_shortcut_asks_for_one_optional_line(tmp_path):
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "tools"))
+    import make_shortcut
+
+    wf = make_shortcut.build("https://example.test/", "secret")
+    [ask] = [a["WFWorkflowActionParameters"] for a in wf["WFWorkflowActions"]
+             if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.ask"]
+    assert ask["WFInputType"] == "Text" and ask["WFAllowsMultilineText"] is False
+    assert "optional" in ask["WFAskActionPrompt"].lower()
+    [req] = [a["WFWorkflowActionParameters"] for a in wf["WFWorkflowActions"]
+             if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"]
+    assert req["WFURL"] == "https://example.test/v1/save"
+
+
 if __name__ == "__main__":
     fns = [v for k, v in dict(globals()).items() if k.startswith("test_") and callable(v)]
     for fn in fns:

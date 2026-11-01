@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Build the "Save to Afterscroll" iOS shortcut: Share → Save to Afterscroll from
-Instagram (or any app) posts the link to the server's /v1/save, and the bot
-picks it up within a minute. The app's own share button does the same; this
-is the fallback for share sheets that hide app extensions.
+Instagram (or any app) asks for one optional line on why, posts it with the
+link to the server's /v1/save, and the bot picks it up within a minute. The
+app's own share button does the same; this is the fallback for share sheets
+that hide app extensions.
 
     python3 tools/make_shortcut.py      # writes "ios/build/Save to Afterscroll.shortcut" (signed)
 
@@ -46,26 +47,50 @@ def _dict(pairs: dict) -> dict:
         "WFSerializationType": "WFDictionaryFieldValue"}
 
 
+# The note is spliced into the JSON body as text, so the shortcut makes it a
+# safe JSON string first: control characters become spaces, then quotes and
+# backslashes get a backslash. Regex find, NSRegularExpression replace template.
+NOTE_ESCAPES = [(r"\p{Cc}+", " "), (r'["\\]', r"\\$0")]
+
+
+def _replace(uid: str, source: dict, find: str, replace: str) -> dict:
+    return {"WFWorkflowActionIdentifier": "is.workflow.actions.text.replace",
+            "WFWorkflowActionParameters": {"UUID": uid, "WFInput": _token(source),
+                                           "WFReplaceTextFind": find, "WFReplaceTextReplace": replace,
+                                           "WFReplaceTextRegularExpression": True}}
+
+
 def build(api_base: str, token: str) -> dict:
-    clip, body, sent = (str(uuid.uuid4()).upper() for _ in range(3))
+    clip, why, flat, note, body, sent = (str(uuid.uuid4()).upper() for _ in range(6))
     # The request body, with the shared link spliced in where OBJ sits. The
     # server pulls the first http(s) link out of whatever text arrives.
-    # Two slots: what was shared, and the clipboard as the fallback — Instagram
-    # hands shortcuts an empty input, so there "Copy link" then run this.
-    template = json.dumps({"url": OBJ, "clip": OBJ}, ensure_ascii=False)
+    # Three slots: their note, what was shared, and the clipboard as the
+    # fallback — Instagram hands shortcuts an empty input, so there "Copy link"
+    # then run this. The note goes first: the other two arrive raw and can
+    # break the JSON, and the server still finds an escaped note at the start.
+    template = json.dumps({"note": OBJ, "url": OBJ, "clip": OBJ}, ensure_ascii=False)
     # attachmentsByRange counts UTF-16 code units, like NSString.
-    first = template.index(OBJ)
-    pos = len(template[:first].encode("utf-16-le")) // 2
-    pos2 = len(template[:template.index(OBJ, first + 1)].encode("utf-16-le")) // 2
+    at = [i for i, ch in enumerate(template) if ch == OBJ]
+    pos = [len(template[:i].encode("utf-16-le")) // 2 for i in at]
     actions = [
         {"WFWorkflowActionIdentifier": "is.workflow.actions.getclipboard",
          "WFWorkflowActionParameters": {"UUID": clip}},
+        # One optional line on why it's worth keeping; the bot keeps it as
+        # my_note and routes the card by it. Done with nothing typed saves
+        # without one. Cancel stops the whole shortcut, so the prompt says so.
+        {"WFWorkflowActionIdentifier": "is.workflow.actions.ask",
+         "WFWorkflowActionParameters": {
+             "UUID": why, "WFInputType": "Text", "WFAllowsMultilineText": False,
+             "WFAskActionPrompt": "Why save this? Optional: leave it empty and tap Done."}},
+        _replace(flat, _out(why, "Ask for Input"), *NOTE_ESCAPES[0]),
+        _replace(note, _out(flat, "Updated Text"), *NOTE_ESCAPES[1]),
         {"WFWorkflowActionIdentifier": "is.workflow.actions.gettext",
          "WFWorkflowActionParameters": {"UUID": body, "WFTextActionText": _text(
              # The whole share, unfiltered: Instagram's item defeated "Get URLs
              # from Input", so the server finds the link in whatever arrives.
-             template, {f"{{{pos}, 1}}": {"Type": "ExtensionInput"},
-                        f"{{{pos2}, 1}}": _out(clip, "Clipboard")})}},
+             template, {f"{{{pos[0]}, 1}}": _out(note, "Updated Text"),
+                        f"{{{pos[1]}, 1}}": {"Type": "ExtensionInput"},
+                        f"{{{pos[2]}, 1}}": _out(clip, "Clipboard")})}},
         {"WFWorkflowActionIdentifier": "is.workflow.actions.downloadurl",
          "WFWorkflowActionParameters": {
              "UUID": sent,
