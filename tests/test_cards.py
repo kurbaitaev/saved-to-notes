@@ -57,10 +57,10 @@ def test_a_save_becomes_one_card_in_its_project_topic(tmp_path):
     assert cards.propose(_item(1, project="editing")) is None  # one card per save
     assert cards.propose(_item(2, category="Move")) is None  # real life lives in the app
     assert cards.propose(_item(3, project="hisense")) is None  # no topic, stays in Notion
-    old = (dt.date.today() - dt.timedelta(days=20)).isoformat()
-    assert cards.propose(_item(4, date=old)) is None         # old saves are reference now
     (c,) = cards.listing(status="queued")
     assert (c["topic"], c["kind"], c["status"]) == ("content", "step", "queued")
+    old = (dt.date.today() - dt.timedelta(days=20)).isoformat()
+    assert cards.get(cards.propose(_item(4, date=old)))["status"] == "queued"    # an old save joins the line
 
 
 def test_your_note_and_a_library_decide_where_a_card_goes(tmp_path):
@@ -88,6 +88,37 @@ def test_three_open_cards_per_topic_newest_save_first(tmp_path):
     assert cards.due() == []
     cards.act(due[0]["id"], "done")
     assert [c["title"] for c in cards.due()] == ["Save 2"]
+
+
+def test_the_line_runs_best_first_and_an_old_save_can_win(tmp_path):
+    _setup(tmp_path)
+    today = dt.date.today()
+    old = (today - dt.timedelta(days=200)).isoformat()
+    cards.propose(_item(1, date=today.isoformat(), fit=0.6))                  # new, weak: 0.9 with the lift
+    cards.propose(_item(2, date=old, fit=0.95, worth=1.1))                    # old, strong
+    cards.propose(_item(3, date=old, fit=0.7))                                # old, weak
+    cards.propose(_item(4, date=today.isoformat(), fit=0.9))                  # new, strong: 1.2
+    assert [c["title"] for c in cards.due()] == ["Save 4", "Save 2", "Save 1"]
+
+
+def test_a_waiting_card_waits_as_long_as_it_takes(tmp_path):
+    _setup(tmp_path)
+    today = dt.date.today()
+    cid = cards.propose(_item(1, date=(today - dt.timedelta(days=400)).isoformat()))
+    assert cid and cards.get(cid)["status"] == "queued"
+    assert cards.expire(now=time.time() + 90 * 86400) == []
+    assert cards.get(cid)["status"] == "queued"
+
+
+def test_offering_a_card_again_only_updates_what_its_worth(tmp_path):
+    _setup(tmp_path)
+    cid = cards.propose(_item(1, worth=0.5))
+    assert cards.propose(_item(1, worth=0.9, application="Something else")) is None
+    c = cards.get(cid)
+    assert c["worth"] == 0.9 and "Something else" not in c["step"]
+    cards.opened(cid, 7, 1)
+    cards.propose(_item(1, worth=0.1))
+    assert cards.get(cid)["worth"] == 0.9     # only while it's waiting
 
 
 def test_ignored_cards_expire_and_the_rate_counts_only_real_actions(tmp_path):

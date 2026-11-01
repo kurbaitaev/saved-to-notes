@@ -15,9 +15,11 @@ within 14 days.
 
 Rules (the "Saves Into Action" design, Oct 31 2026):
 - one card per save, in the topic of its best project
-- at most CAP open cards per topic; the rest wait, newest save first
+- at most CAP open cards per topic; the rest wait in line, best first: what the
+  engine says a save is worth, plus a lift for being recent
+- every matched save joins the line, however old, and waits as long as it takes
 - an open card nobody acts on expires after EXPIRE_DAYS (the save stays in
-  Notion); a waiting card whose save is older than that never shows up
+  Notion and the Playbooks)
 - a note you wrote when saving wins: if it names a topic or a library, the
   card goes there
 
@@ -41,6 +43,7 @@ import folders
 
 CAP = int(os.environ.get("CARDS_CAP", "3"))
 EXPIRE_DAYS = 14
+FRESH_LIFT = 0.3  # a new save counts for this much more, fading over EXPIRE_DAYS
 DONE = {"done", "remade", "added"}  # what counts as acting on a card
 CLOSED = DONE | {"notnow", "expired", "stale"}
 
@@ -52,7 +55,7 @@ create table if not exists cards (
   title text, category text, save_date text, topic text not null, project text,
   kind text not null, step text not null, steps text, also text, destination text,
   fit real, my_note text, status text not null, thread_id integer, message_id integer,
-  created real, sent real, acted real, unique (user, url)
+  created real, sent real, acted real, worth real, unique (user, url)
 );
 create table if not exists card_events (
   id integer primary key autoincrement, card_id text not null, user text not null,
@@ -79,6 +82,10 @@ def _db() -> sqlite3.Connection:
     c = sqlite3.connect(appdb.DB, timeout=10)
     c.row_factory = sqlite3.Row
     c.executescript(_SCHEMA)
+    try:
+        c.execute("alter table cards add column worth real")
+    except sqlite3.OperationalError:
+        pass  # already there
     return c
 
 
@@ -185,8 +192,6 @@ def propose(item: dict, user: str | None = None, now: float | None = None) -> st
     category = folders.normalize(item.get("category"))
     if not url or not step or category in folders.REAL_LIFE:
         return None  # real-life saves live in the app, where they're done
-    if _age_days(item.get("date"), now) > EXPIRE_DAYS:
-        return None  # an old save is reference now, not a next step
     project = str(item.get("project") or "")
     tid = topic_for_project(project)
     mine = note_for(url, user)
@@ -205,18 +210,21 @@ def propose(item: dict, user: str | None = None, now: float | None = None) -> st
     if not tid or not topic(tid):
         return None
     cid = card_id(user, url)
+    fit = float(item.get("fit") or 0)
+    worth = float(item.get("worth") or fit)
     with _db() as c:
         cur = c.execute(
             "insert or ignore into cards (id,user,url,save_id,title,category,save_date,topic,project,"
-            "kind,step,steps,also,destination,fit,my_note,status,created) "
-            "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'queued',?)",
+            "kind,step,steps,also,destination,fit,my_note,status,created,worth) "
+            "values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'queued',?,?)",
             (cid, user, url, item.get("save_id"), str(item.get("title") or "")[:200], category,
              item.get("date"), tid, project, kind, step[:300],
              json.dumps([str(s)[:200] for s in (item.get("steps") or [])][:4], ensure_ascii=False),
-             json.dumps(item.get("also") or [], ensure_ascii=False), dest,
-             float(item.get("fit") or 0), mine, now))
+             json.dumps(item.get("also") or [], ensure_ascii=False), dest, fit, mine, now, worth))
         if cur.rowcount:
             _event(c, cid, user, "proposed", project)
+        else:  # offered again: what it's worth may have changed, nothing else does
+            c.execute("update cards set worth=? where id=? and status='queued'", (worth, cid))
     return cid if cur.rowcount else None
 
 
@@ -235,10 +243,17 @@ def _event(c: sqlite3.Connection, cid: str, user: str, action: str, text: str = 
 
 # --- the flow of a card ---------------------------------------------------
 
-def due(user: str | None = None) -> list[dict]:
-    """Waiting cards that fit under each topic's cap, newest save first: a save
-    is worth most on the day it was saved."""
+def _rank(r: sqlite3.Row, now: float) -> float:
+    """What a waiting card is worth, plus a lift that fades as the save ages: a save
+    means most on the day it was saved, but a great old one beats a weak new one."""
+    worth = r["worth"] if r["worth"] is not None else r["fit"] or 0
+    return worth + FRESH_LIFT * max(0.0, 1 - _age_days(r["save_date"], now) / EXPIRE_DAYS)
+
+
+def due(user: str | None = None, now: float | None = None) -> list[dict]:
+    """Waiting cards that fit under each topic's cap, best first."""
     user = user or default_user()
+    now = now or time.time()
     out = []
     with _db() as c:
         open_by = dict(c.execute("select topic, count(*) from cards where user=? and status='open' "
@@ -247,10 +262,10 @@ def due(user: str | None = None) -> list[dict]:
             room = CAP - open_by.get(t["id"], 0)
             if room <= 0:
                 continue
-            rows = c.execute("select * from cards where user=? and topic=? and status='queued' "
-                             "order by save_date desc, fit desc, created desc limit ?",
-                             (user, t["id"], room)).fetchall()
-            out += [_row(r) for r in rows]
+            rows = c.execute("select * from cards where user=? and topic=? and status='queued'",
+                             (user, t["id"])).fetchall()
+            best = sorted(rows, key=lambda r: (-_rank(r, now), -(r["created"] or 0)))[:room]
+            out += [_row(r) for r in best]
     return out
 
 
@@ -375,15 +390,12 @@ def expire(user: str | None = None, now: float | None = None) -> list[dict]:
     user = user or default_user()
     now = now or time.time()
     cutoff = now - EXPIRE_DAYS * 86400
-    stale_day = dt.date.fromtimestamp(now) - dt.timedelta(days=EXPIRE_DAYS)
     with _db() as c:
         gone = [_row(r) for r in c.execute("select * from cards where user=? and status='open' "
                                            "and sent<?", (user, cutoff)).fetchall()]
         for g in gone:
             c.execute("update cards set status='expired', acted=? where id=?", (now, g["id"]))
             _event(c, g["id"], user, "expired")
-        c.execute("update cards set status='stale' where user=? and status='queued' and save_date<?",
-                  (user, stale_day.isoformat()))
     return gone
 
 
