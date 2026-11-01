@@ -202,6 +202,21 @@ def test_a_reply_naming_another_project_moves_the_card(tmp_path):
     assert any(m == "createForumTopic" and p["name"] == "Lak" for m, p in calls.made)
 
 
+def test_your_note_is_written_into_the_vault_note_apart_from_the_model(tmp_path):
+    import bot
+    import folders
+    old = bot.PROJECT_DIR
+    bot.PROJECT_DIR = tmp_path
+    try:
+        rel = bot._write_vault_note({"title": "Fonts", "folder": folders.CRAFT, "why_save": "for subs",
+                                     "my_note": 'for "subs" on reels'},
+                                    "https://x.com/a/status/1", "", "2026-11-01", {})
+    finally:
+        bot.PROJECT_DIR = old
+    head = (tmp_path / "vault" / rel).read_text().split("\n---", 1)[0]
+    assert 'my_note: "for \\"subs\\" on reels"' in head  # JSON-quoted, so YAML-safe
+
+
 if __name__ == "__main__":
     fns = [v for k, v in dict(globals()).items() if k.startswith("test_") and callable(v)]
     for fn in fns:
