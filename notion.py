@@ -109,6 +109,28 @@ def append_verbatim(source_url: str, label: str, text: str) -> str:
         return f"{type(e).__name__}: {e}"
 
 
+def set_checkbox(source_url: str, prop: str, value: bool = True) -> bool:
+    """Tick a checkbox on the newest page for this reel (the Remake button sets
+    "Worth remaking", which content.py turns into a draft)."""
+    token = os.environ.get("NOTION_TOKEN", "").strip()
+    db_id = os.environ.get("NOTION_DATABASE_ID", "").strip()
+    if not (token and db_id and source_url):
+        return False
+    try:
+        rows = _api(f"https://api.notion.com/v1/databases/{db_id}/query", token, "POST",
+                    {"filter": {"property": "Source", "url": {"equals": source_url}},
+                     "sorts": [{"timestamp": "created_time", "direction": "descending"}],
+                     "page_size": 1}).get("results", [])
+        if not rows:
+            return False
+        _api(f"https://api.notion.com/v1/pages/{rows[0]['id']}", token, "PATCH",
+             {"properties": {prop: {"checkbox": bool(value)}}})
+        return True
+    except Exception as e:  # noqa: BLE001
+        log.warning("setting %s failed for %s: %s", prop, source_url, e)
+        return False
+
+
 def dedupe_by_source(source_url: str) -> int:
     """Keep only the newest page for a given reel Source; archive older ones.
 

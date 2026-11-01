@@ -40,6 +40,9 @@ jobs:
       - name: Regression tests
         run: python tests/test_pipeline.py
 
+      - name: Card tests
+        run: python tests/test_cards.py
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:

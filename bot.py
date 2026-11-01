@@ -30,11 +30,19 @@ from pathlib import Path
 
 from telegram import Update
 from telegram.constants import ParseMode
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from telegram.ext import (
+    Application,
+    CallbackQueryHandler,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 import acquire
 import agent_openai
 import appdb
+import cards
 import claude_login
 import clips
 import details
@@ -43,6 +51,7 @@ import ledger
 import notion
 import review
 import textsig
+import tgcards
 import topics
 
 PROJECT_DIR = Path(__file__).resolve().parent
@@ -388,8 +397,10 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
     if media.get("kind") == "article":
         obj["kind"] = "article"
     if user_note:
-        # Their words, not a paraphrase of their words.
+        # Their words, not a paraphrase of their words. "my_note" keeps them
+        # apart in the file too, so Context Engine can tell them from a guess.
         obj["why_save"] = user_note
+        obj["my_note"] = user_note
     n_bad = _validate_links(obj)
     if n_bad:
         log.info("downgraded %d non-canonical 'verified' link(s) for %s", n_bad, url)
@@ -404,7 +415,9 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
     date_iso = prior or datetime.date.today().isoformat()
     # vault write (disk) and Notion sync (network) are independent — run them together
     sinks = [asyncio.to_thread(_write_vault_note, obj, url, transcript, date_iso, media)]
-    if notion.enabled():
+    # Real-life saves (workouts, places, food) are done in the app, not read:
+    # in Notion they were 40 rows of exercises nobody opened there.
+    if notion.enabled() and obj.get("folder") not in folders.REAL_LIFE:
         sinks.append(asyncio.to_thread(_sync_notion, obj, media, url, transcript, date_iso))
     sinks.append(asyncio.to_thread(_sync_app, obj, media, url, date_iso))
     if media.get("via_app"):
@@ -972,6 +985,28 @@ async def deliver(bot, chat_id: int, html_msg: str, rich_md: str | None,
                                disable_web_page_preview=True)
 
 
+_ENGINE_EVERY_S = 600
+_engine_poked = 0.0
+
+
+def _poke_engine() -> None:
+    """Ask Context Engine to look at new saves now instead of at its next
+    two-hourly run, so a save's card arrives the same day — a saved post is
+    revisited 4.7% of the time on day 0 and 0.3% by day 9. At most once per
+    10 minutes: one run handles every save made since, and the engine skips a
+    run while another is going."""
+    global _engine_poked
+    unit = os.environ.get("CE_SYNC_UNIT", "").strip()
+    if not unit or time.time() - _engine_poked < _ENGINE_EVERY_S:
+        return
+    _engine_poked = time.time()
+    try:
+        subprocess.Popen(["systemctl", "--user", "start", "--no-block", unit],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
+        log.warning("couldn't start %s: %s", unit, e)
+
+
 async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
                   via_app: bool = False, source: str = "telegram") -> None:
     """One stable status message, edited in place at real milestones (no flaky drafts).
@@ -995,6 +1030,10 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
         return
     _in_flight.add(norm)
     ledger.pending_add(norm, chat_id, user_note, source)
+    try:
+        cards.remember_note(norm, user_note)
+    except Exception as e:  # noqa: BLE001 — a lost note must not cost the save
+        log.warning("couldn't keep the note for %s: %s", norm, e)
     if via_app:
         appdb.share_started(norm)
     mid = None
@@ -1016,6 +1055,8 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
         res = await run_pipeline(url, force=force, on_progress=progress, user_note=user_note,
                                  via_app=via_app)
         release = not res.keep_queued
+        if res.saved:
+            _poke_engine()
         if via_app and not res.saved:
             # Only the saved paths report to the app themselves. A repost, a
             # dead link or an agent with no JSON used to leave the card on
@@ -1100,6 +1141,8 @@ def _write_vault_note(obj: dict, url: str, transcript: str, date_iso: str,
         L.append(f"details: {details.to_json(obj['details'])}")
     if obj.get("review_question"):
         L.append(f"review_question: {obj['review_question']}")
+    if obj.get("my_note"):
+        L.append(f"my_note: {json.dumps(obj['my_note'], ensure_ascii=False)}")
     L += ["---", "", f"# {title}", ""]
     if _ok(quote):
         L.append(f"> {quote}")
@@ -1299,6 +1342,9 @@ async def on_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     text = update.message.text or ""
     urls = URL_RE.findall(text)
     if not urls:
+        # Text in a project's topic, or a reply to a card, is about that card.
+        if await tgcards.on_text(update, context):
+            return
         await update.message.reply_text("Send me a link (Instagram reel, X post, TikTok, YouTube).")
         return
     force = "/force" in text
@@ -1385,6 +1431,8 @@ async def _heartbeat(bot=None) -> None:
             _trim_logs()
         if bot is not None and ticks and ticks % RETRY_EVERY_MIN == 0:
             asyncio.create_task(_drain_pending(bot))
+        if bot is not None:
+            asyncio.create_task(tgcards.tick())
         ticks += 1
         await asyncio.sleep(60)
 
@@ -1543,6 +1591,7 @@ def main() -> None:
     app = Application.builder().token(token).post_init(_resume_pending).build()
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(CommandHandler("force", on_force))
+    app.add_handler(CallbackQueryHandler(tgcards.on_callback, pattern=r"^c\|"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_error_handler(_on_error)
     log.info("bot running (polling)")

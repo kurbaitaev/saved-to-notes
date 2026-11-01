@@ -6,6 +6,13 @@
     GET  /v1/clips/<save>/<file>.mp4  -> the video (Range supported)
     POST /v1/save  {"url", "note"?}   -> 202, queued for the bot
 
+Cards (cards.py) — one next step per save, for every surface that shows them:
+    GET  /v1/cards?topic=&status=open&limit=   -> {"cards": [...], "topics": [...]}
+    GET  /v1/cards/stats                       -> the 14-day action rate
+    GET  /v1/cards/events?since=&actions=a,b   -> what you did and said, for the matcher
+    POST /v1/cards/propose {"items": [...]}    -> Context Engine hands over new matches
+    POST /v1/cards/<id> {"action"} | {"comment"} -> act on a card from outside Telegram
+
 Every call but health needs `Authorization: Bearer $APP_TOKEN` (.env). It listens
 on 127.0.0.1 only; Tailscale Funnel publishes it over HTTPS
 (`tailscale funnel --bg --https=8443 http://127.0.0.1:8791`).
@@ -27,9 +34,11 @@ PROJ = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJ))
 
 import appdb  # noqa: E402
+import cards  # noqa: E402
 
 PORT = int(os.environ.get("APP_API_PORT", "8791"))
 _CLIP = re.compile(r"^/v1/clips/([0-9a-f]{12})/((?:loop|move\d{1,2})\.(?:mp4|jpg))$")
+_CARD = re.compile(r"^/v1/cards/([0-9a-f]{12})$")
 
 
 def load_env() -> None:
@@ -75,13 +84,69 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/v1/saves":
             return self._json(200, {"saves": appdb.all_saves(), "pending": appdb.pending_count(),
                                     "recent": appdb.recent_shares()})
+        if path.startswith("/v1/cards"):
+            return self._cards_get(path, self._query())
         m = _CLIP.match(path)
         if m:
             return self._file(appdb.CLIPS / m.group(1) / m.group(2))
         self._json(404, {"error": "not found"})
 
+    def _query(self) -> dict:
+        from urllib.parse import parse_qs, urlsplit
+        return {k: v[-1] for k, v in parse_qs(urlsplit(self.path).query).items()}
+
+    def _body(self) -> dict:
+        n = min(int(self.headers.get("Content-Length", "0")), 512_000)
+        try:
+            d = json.loads(self.rfile.read(n).decode("utf-8", "replace") or "{}")
+        except ValueError:
+            return {}
+        return d if isinstance(d, dict) else {}
+
+    def _cards_get(self, path: str, q: dict):
+        if path == "/v1/cards":
+            limit = max(1, min(int(q.get("limit") or 50), 200))
+            status = q.get("status", "open") or None
+            return self._json(200, {"cards": cards.listing(tid=q.get("topic"), status=status, limit=limit),
+                                    "adds": cards.pending_adds(), "topics": cards.topics(),
+                                    "destinations": cards.config().get("destinations", [])})
+        if path == "/v1/cards/stats":
+            return self._json(200, cards.stats())
+        if path == "/v1/cards/events":
+            acts = tuple(a for a in (q.get("actions") or "").split(",") if a)
+            return self._json(200, {"events": cards.events(since=float(q.get("since") or 0),
+                                                           actions=acts)})
+        self._json(404, {"error": "not found"})
+
+    def _cards_post(self, path: str):
+        d = self._body()
+        if path == "/v1/cards/propose":
+            made = [cid for it in (d.get("items") or []) if isinstance(it, dict)
+                    for cid in [cards.propose(it)] if cid]
+            return self._json(200, {"created": made})
+        m = _CARD.match(path)
+        if not m or not cards.get(m.group(1)):
+            return self._json(404, {"error": "no such card"})
+        cid = m.group(1)
+        if d.get("comment"):
+            cards.comment(cid, str(d["comment"]))
+        if d.get("action") == "applied":
+            cards.applied(cid)
+        elif d.get("action"):
+            try:
+                # "via" tells the bot to update the Telegram message, which
+                # otherwise keeps offering buttons for a card already handled.
+                cards.act(cid, str(d["action"]), f"via {str(d.get('via') or 'api')[:20]}")
+            except ValueError as e:
+                return self._json(400, {"error": str(e)})
+        self._json(200, cards.get(cid))
+
     def do_POST(self):  # noqa: N802
         path = self.path.split("?")[0]
+        if path.startswith("/v1/cards/"):
+            if self._authed():
+                self._cards_post(path)
+            return
         if path not in ("/v1/save", "/v1/report"):
             return self._json(404, {"error": "not found"})
         if not self._authed():
