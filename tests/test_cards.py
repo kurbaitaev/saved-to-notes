@@ -71,6 +71,9 @@ def test_your_note_and_a_library_decide_where_a_card_goes(tmp_path):
     add = cards.get(cards.propose(_item(6, project="gameplan", asset="list",
                                         title="Background Music for Short Form")))
     assert (add["kind"], add["destination"], add["topic"]) == ("add", "music", "content")
+    videos = cards.get(cards.propose(_item(7, asset="list", title="7 Videos to Master Editing",
+                                          application="Add the music cues from these videos")))
+    assert videos["kind"] == "step"  # a step that mentions music doesn't make a music library
 
 
 def test_three_open_cards_per_topic_newest_save_first(tmp_path):

@@ -195,7 +195,10 @@ def propose(item: dict, user: str | None = None, now: float | None = None) -> st
         tid = named
     kind, dest = "step", None
     if str(item.get("asset") or "") in ("tool", "list", "reference") or item.get("resource"):
-        d = destination_for(" ".join([str(item.get("title") or ""), step, mine]))
+        # The title and your note say what a save IS; the step only says how to
+        # use it, and "add the sound design" made a list of editing videos look
+        # like a sound library.
+        d = destination_for(" ".join([str(item.get("title") or ""), mine]))
         if d:
             kind, dest = "add", d["id"]
             tid = named or d.get("topic") or tid
