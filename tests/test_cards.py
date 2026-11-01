@@ -4,6 +4,7 @@ Runs under pytest or on its own: `python tests/test_cards.py`.
 """
 
 import asyncio
+import contextlib
 import datetime as dt
 import json
 import pathlib
@@ -296,6 +297,205 @@ def test_the_shortcut_asks_for_one_optional_line(tmp_path):
     [req] = [a["WFWorkflowActionParameters"] for a in wf["WFWorkflowActions"]
              if a["WFWorkflowActionIdentifier"] == "is.workflow.actions.downloadurl"]
     assert req["WFURL"] == "https://example.test/v1/save"
+
+
+@contextlib.contextmanager
+def _stubbed(obj, **attrs):
+    old = {k: getattr(obj, k) for k in attrs}
+    for k, v in attrs.items():
+        setattr(obj, k, v)
+    try:
+        yield
+    finally:
+        for k, v in old.items():
+            setattr(obj, k, v)
+
+
+@contextlib.contextmanager
+def _a_saved_link(tmp_path, url="https://www.instagram.com/reel/N2/"):
+    """A link already saved, with no note: its vault file and ledger row. Yields
+    (url, file, the notes Notion was given). Any attempt to fetch the link fails."""
+    import acquire
+    import bot
+    import folders
+    import ledger
+
+    def no_fetch(_):
+        raise AssertionError("an already-saved link must not run again")
+    notes = []
+    _setup(tmp_path)
+    ledger._PATH, ledger._PENDING = tmp_path / "l.json", tmp_path / "p.json"
+    with _stubbed(bot, PROJECT_DIR=tmp_path, _in_flight=set(), _late_notes={}), \
+            _stubbed(acquire, acquire=no_fetch), \
+            _stubbed(bot.notion, enabled=lambda: True,
+                     add_note=lambda u, n: notes.append((u, n)) or True):
+        rel = bot._write_vault_note({"title": "Fonts", "folder": folders.CRAFT, "why_save": "a model's guess"},
+                                    url, "**Why save:** said in the video", "2026-11-01", {})
+        ledger.put(url, {"status": "done", "title": "Fonts", "path": rel, "sig": ""})
+        yield url, tmp_path / "vault" / rel, notes
+
+
+def test_a_note_on_a_saved_link_goes_into_its_note_without_running_it_again(tmp_path):
+    import bot
+    with _a_saved_link(tmp_path) as (url, path, notes):
+        def share(note):
+            return asyncio.run(bot.run_pipeline(url, user_note=note)).html
+        before = path.read_text()
+
+        assert "Kept" not in share("") and path.read_text() == before and not notes
+
+        assert "Kept your note" in share('for "subs" on reels')
+        text = path.read_text()
+        assert 'my_note: "for \\"subs\\" on reels"' in text.split("\n---\n")[0]
+        assert '**Why save:** for "subs" on reels\n\n**Original:**' in text
+        assert "a model's guess" not in text
+        assert "**Why save:** said in the video" in text  # the transcript is verbatim
+        assert notes == [(url, 'for "subs" on reels')]
+        assert len(list((tmp_path / "vault").rglob("*.md"))) == 1
+
+        assert "Kept" not in share('for "subs" on reels')  # nothing new, nothing repeated
+        assert path.read_text() == text and len(notes) == 1
+
+        share("no, for the gameplan site")  # the newest words are the reason now
+        text = path.read_text()
+        assert text.count("my_note:") == 1 and 'my_note: "no, for the gameplan site"' in text
+        assert text.count("**Why save:** no, for the gameplan site") == 1 and "reels" not in text
+        assert len(notes) == 2
+
+        moved = path.parent.parent / "Elsewhere" / path.name  # re-filed by a tool
+        moved.parent.mkdir()
+        path.rename(moved)
+        share("still here")
+        assert 'my_note: "still here"' in moved.read_text()
+
+
+def test_a_note_on_a_note_less_save_is_added_where_a_fresh_save_puts_it(tmp_path):
+    import bot
+    import folders
+    import ledger
+    with _a_saved_link(tmp_path, "https://www.instagram.com/reel/N3/") as (url, path, _):
+        rel = bot._write_vault_note({"title": "Plain", "folder": folders.CRAFT}, url, "", "2026-11-01", {})
+        path.unlink()
+        ledger.put(url, {"status": "done", "title": "Plain", "path": rel, "sig": ""})
+        assert asyncio.run(bot._keep_note(url, "why"))
+        text = (tmp_path / "vault" / rel).read_text()
+        fresh = bot._write_vault_note({"title": "Plain", "folder": folders.CRAFT, "why_save": "why",
+                                       "my_note": "why"}, url, "", "2026-11-01", {})
+        assert text == (tmp_path / "vault" / fresh).read_text()  # byte for byte
+        ledger.put(url, {"status": "failed"})
+        assert not asyncio.run(bot._keep_note(url, "not saved, so nothing to note"))
+
+
+def test_a_note_on_a_repost_goes_to_the_save_it_repeats(tmp_path):
+    import bot
+    import ledger
+    words = "the same words spoken in both of these reels, long enough to fingerprint " * 5
+    with _a_saved_link(tmp_path) as (url, path, _):
+        ledger.put(url, ledger.get(url) | {"sig": bot.textsig.sig(words)})
+        res = asyncio.run(bot.run_pipeline("https://www.tiktok.com/@a/video/1", user_note="for subs",
+                                           media={"transcript": words}))
+        assert res.share == "duplicate" and "Kept your note" in res.html
+        assert 'my_note: "for subs"' in path.read_text()
+
+
+def test_a_note_sent_while_the_link_is_running_lands_when_it_ends(tmp_path):
+    """Missing the share button's window and sharing again usually lands here:
+    the first run takes about a minute, and it started without the note."""
+    import bot
+    import ledger
+
+    async def go(outcome):
+        started, finish = asyncio.Event(), asyncio.Event()
+
+        async def run(*a, **k):
+            started.set()
+            await finish.wait()
+            return bot.Result("note", None, None, outcome)
+        with _stubbed(bot, run_pipeline=run):
+            first = asyncio.create_task(bot.process(None, 1, url, force=False, source="app"))
+            await started.wait()
+            await bot.process(None, 1, url, force=False, user_note="for Lak", source="app")
+            assert ledger.pending_all()[url]["note"] == "for Lak"  # survives a restart
+            finish.set()
+            await first
+    with _a_saved_link(tmp_path) as (url, path, _):
+        asyncio.run(go(bot.RETRYABLE))
+        assert "my_note" not in path.read_text()  # still queued: the retry writes it
+        assert ledger.pending_all()[url]["note"] == "for Lak" and not bot._late_notes
+
+        asyncio.run(go(bot.SAVED))
+        assert 'my_note: "for Lak"' in path.read_text()
+        assert url not in ledger.pending_all() and not bot._late_notes
+
+
+def test_a_note_reaches_a_card_that_already_exists(tmp_path):
+    _setup(tmp_path)
+    calls = _Calls()
+    tgcards.call, tgcards._topics_on = calls, None
+    url = _item(1)["url"]
+
+    def note(text):
+        asyncio.run(tgcards.noted(url, text))
+    def edits():
+        return [p for m, p in calls.made if m == "editMessageText"]
+
+    note("nothing to attach it to yet")  # no card: propose() reads it from remember_note
+    cid = cards.propose(_item(1))
+    asyncio.run(tgcards.pump())
+
+    note("this one matters")  # an open card shows it, buttons intact
+    assert "Your note: this one matters" in edits()[-1]["text"] and edits()[-1]["reply_markup"]
+    assert cards.get(cid)["status"] == "open"
+    note("this one matters")
+    assert len(edits()) == 1
+
+    note("no, this is for Lak")  # names a topic: the card goes there and goes out again
+    c = cards.get(cid)
+    assert (c["topic"], c["status"]) == ("lak", "open") and c["my_note"] == "no, this is for Lak"
+    assert "Moved to Lak" in edits()[-1]["text"] and "reply_markup" not in edits()[-1]
+
+    cards.act(cid, "done")
+    sent = len(calls.made)
+    note("and for the gameplan site")  # closed stays closed, but the words are kept
+    assert cards.get(cid)["status"] == "done" and len(calls.made) == sent
+    said = [e["text"] for e in cards.events() if e["action"] == "comment"]
+    assert said == ["this one matters", "no, this is for Lak", "and for the gameplan site"]
+
+
+def test_a_note_naming_a_library_sends_a_resource_card_home(tmp_path):
+    _setup(tmp_path)
+    tool = _item(2, title="Music packs", asset="tool", project="lak")
+    cid = cards.propose(tool)
+    cards.move(cid, "lak")
+    assert cards.topic_for_note(cards.get(cid), "music lib") == "content"
+    assert cards.topic_for_note(cards.get(cid), "just a thought") is None
+    step = cards.get(cards.propose(_item(3, project="lak")))
+    assert cards.topic_for_note(step, "the music here") is None  # only a resource has a library
+
+
+def test_a_later_note_is_added_to_the_notion_page_as_a_callout(tmp_path):
+    import notion
+    made = []
+
+    def api(url, token, method="GET", body=None):
+        made.append((url, method, body))
+        return {"results": [{"id": "page1"}] if url.endswith("/query") and rows else []}
+    env = {"NOTION_TOKEN": "t", "NOTION_DATABASE_ID": "db"}
+    old = {k: cards.os.environ.get(k) for k in env}
+    cards.os.environ.update(env)
+    try:
+        with _stubbed(notion, _api=api):
+            rows = True
+            assert notion.add_note("https://x/1", " for subs ")
+            url, method, body = made[-1]
+            assert url.endswith("/blocks/page1/children") and method == "PATCH"
+            text = body["children"][0]["callout"]["rich_text"][0]["text"]["content"]
+            assert text == "for subs"
+            rows = False  # a real-life save has no row
+            assert not notion.add_note("https://x/2", "for subs")
+    finally:
+        for k, v in old.items():
+            cards.os.environ.pop(k, None) if v is None else cards.os.environ.__setitem__(k, v)
 
 
 if __name__ == "__main__":

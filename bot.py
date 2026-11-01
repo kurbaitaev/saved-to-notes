@@ -91,6 +91,8 @@ HEARTBEAT = PROJECT_DIR / "logs" / "heartbeat"
 # Normalized urls currently being processed, so the same reel can't be handled
 # twice concurrently (the startup resume task runs outside Telegram's lock).
 _in_flight: set[str] = set()
+# Notes that arrived while their link was running: that run started without them.
+_late_notes: dict[str, str] = {}
 
 # Ground truth for "the login is dead": the agent actually said so. The keychain
 # is only a guess, and guessing wrong once cost three reels with no alert.
@@ -320,7 +322,8 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
         where = f" ({cached['path']})" if cached.get("path") else ""
         if via_app:
             appdb.share_done(url, "duplicate", "", str(cached.get("title") or ""))
-        return Result(f"✅ Already saved as <b>{html.escape(title)}</b>{where}.\n"
+        kept = "Kept your note.\n" if await _keep_note(url, user_note) else ""
+        return Result(f"✅ Already saved as <b>{html.escape(title)}</b>{where}.\n{kept}"
                       "Send /force to redo it.", None, None, SAVED)
 
     if media is None:
@@ -348,11 +351,12 @@ async def run_pipeline(url: str, force: bool = False, on_progress=None,
             if other_url != url and textsig.distance(fp, entry.get("sig", "")) <= textsig.SAME:
                 await asyncio.to_thread(acquire.cleanup, media)
                 title = entry.get("title") or other_url
+                kept = "Kept your note on it.\n" if await _keep_note(other_url, user_note) else ""
                 return Result(
                     "♻️ You saved this already — same content, different link.\n"
                     f"<b>{html.escape(title)}</b> ({entry.get('path', 'in the vault')}), "
                     f"saved {entry.get('ts', '')[:10]}.\n"
-                    f"Original: {html.escape(other_url)}\n\n"
+                    f"Original: {html.escape(other_url)}\n{kept}\n"
                     "Send /force with this link if you want a second note anyway.",
                     None, None, PERMANENT, share="duplicate")
 
@@ -511,6 +515,65 @@ def _dedupe_vault_by_source(url: str) -> int:
         except OSError:
             pass
     return removed
+
+
+def _note_into_vault(url: str, rel: str, note: str) -> bool:
+    """Put your note in a saved note's file where a fresh save would have:
+    `my_note` in the frontmatter, "Why save" in the body. A later note replaces
+    an earlier one. False when the file already says this or can't be found."""
+    root = PROJECT_DIR / "vault"
+    path = root / rel
+    if not (rel and path.is_file()):
+        # Tools re-file notes, and the ledger's path doesn't always follow.
+        src = re.compile(rf"^source:\s*{re.escape(url)}\s*$", re.M)
+        path = next((n for n in root.rglob("*.md") if src.search(n.read_text(errors="replace"))), None)
+    if path is None:
+        log.warning("no vault note to put a note on for %s", url)
+        return False
+    head, sep, body = path.read_text().partition("\n---\n")
+    line = f"my_note: {json.dumps(note, ensure_ascii=False)}"
+    lines = head.split("\n")
+    if not (head.startswith("---") and sep) or line in lines:
+        return False
+    head = "\n".join([x for x in lines if not x.startswith("my_note:")] + [line])
+    # Only above "**Original:**": below it is the transcript, which may say anything.
+    top, mark, rest = body.partition("**Original:**")
+    if mark:
+        why = f"**Why save:** {note}"
+        top, n = re.subn(r"^\*\*Why save:\*\*.*?(?=\n\n|\Z)", lambda _: why, top, count=1,
+                         flags=re.M | re.S)
+        if not n:
+            top += why + "\n\n"
+    path.write_text(head + sep + top + mark + rest)
+    return True
+
+
+async def _keep_note(url: str, note: str) -> bool:
+    """A note for a link that's already saved: shared again with a reason, which
+    is what you do after missing the share button's window. It goes everywhere a
+    fresh save puts it, without running the link again. Best effort, like the
+    other sinks: the save itself is safe either way."""
+    note = (note or "").strip()
+    entry = ledger.get(url) or {}
+    if not note or entry.get("status") != "done":
+        return False
+    try:
+        cards.remember_note(url, note)  # a card not made yet picks it up from here
+        if not await asyncio.to_thread(_note_into_vault, url, entry.get("path") or "", note):
+            return False
+    except Exception as e:  # noqa: BLE001
+        log.warning("couldn't keep the note for %s: %s", url, e)
+        return False
+    if notion.enabled():
+        await asyncio.to_thread(notion.add_note, url, note)
+    try:
+        await tgcards.noted(url, note)
+    except Exception as e:  # noqa: BLE001
+        log.warning("couldn't put the note on the card for %s: %s", url, e)
+    if os.environ.get("VAULT_SYNC", "").strip() == "1":
+        asyncio.get_running_loop().run_in_executor(None, _vault_sync_push)
+    _poke_engine()  # the engine re-reads a changed note, and your words steer its step
+    return True
 
 
 def _parse_output(raw: str) -> dict | None:
@@ -1027,6 +1090,10 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
     # two vault notes.
     if norm in _in_flight:
         log.info("already processing %s — skipping duplicate", norm)
+        if user_note:
+            # In the pending record too, so a retry of this run carries it.
+            _late_notes[norm] = user_note
+            ledger.pending_add(norm, chat_id, user_note, source)
         return
     _in_flight.add(norm)
     ledger.pending_add(norm, chat_id, user_note, source)
@@ -1095,6 +1162,9 @@ async def process(bot, chat_id: int, url: str, force: bool, user_note: str = "",
         if release:
             ledger.pending_remove(norm)
         _in_flight.discard(norm)
+        late = _late_notes.pop(norm, "")
+        if late and release:
+            await _keep_note(norm, late)
 
 
 def _caption_heading(media: dict | None) -> str:

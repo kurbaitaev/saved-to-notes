@@ -109,6 +109,24 @@ def append_verbatim(source_url: str, label: str, text: str) -> str:
         return f"{type(e).__name__}: {e}"
 
 
+def add_note(source_url: str, note: str) -> bool:
+    """Add your note to an existing page, as the same callout a fresh save carries."""
+    token = os.environ.get("NOTION_TOKEN", "").strip()
+    db_id = os.environ.get("NOTION_DATABASE_ID", "").strip()
+    if not (token and db_id and source_url and note.strip()):
+        return False
+    try:
+        rows = _api(f"https://api.notion.com/v1/databases/{db_id}/query", token, "POST",
+                    {"filter": {"property": "Source", "url": {"equals": source_url}},
+                     "sorts": [{"timestamp": "created_time", "direction": "descending"}],
+                     "page_size": 1}).get("results", [])
+        # Real-life saves have no row: they live in the app.
+        return bool(rows) and not _append_blocks(rows[0]["id"], [_callout(note.strip())], token)
+    except Exception as e:  # noqa: BLE001
+        log.warning("adding a note failed for %s: %s", source_url, e)
+        return False
+
+
 def set_checkbox(source_url: str, prop: str, value: bool = True) -> bool:
     """Tick a checkbox on the newest page for this reel (the Remake button sets
     "Worth remaking", which content.py turns into a draft)."""

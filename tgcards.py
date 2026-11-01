@@ -158,6 +158,13 @@ async def close(c: dict, status: str) -> None:
                                        "link_preview_options": {"is_disabled": True}})
 
 
+async def _redraw(c: dict) -> None:
+    await call("editMessageText", {"chat_id": _owner(), "message_id": c["message_id"],
+                                   "text": render(c), "parse_mode": "HTML",
+                                   "link_preview_options": {"is_disabled": True},
+                                   "reply_markup": keyboard(c)})
+
+
 _pumping = asyncio.Lock()
 
 
@@ -174,6 +181,28 @@ async def pump() -> int:
         for c in cards.due():
             sent += await send(c)
         return sent
+
+
+async def _move(c: dict, tid: str) -> None:
+    if c["status"] == "open":
+        name = (cards.topic(tid) or {}).get("name", tid)
+        await close(c, f"↪ Moved to {html.escape(name)}.")
+    cards.move(c["id"], tid)
+    await pump()
+
+
+async def noted(url: str, note: str) -> None:
+    """A note added to a save that already has a card. A note wins here as it
+    does when a card is made: if it points at another topic the card goes there,
+    otherwise an open card shows it. A closed card only records it."""
+    c = cards.set_note(url, note)
+    if not c or c["status"] not in ("queued", "open"):
+        return
+    tid = cards.topic_for_note(c, note)
+    if tid:
+        await _move(c, tid)
+    elif c["status"] == "open":
+        await _redraw(c)
 
 
 async def apply(c: dict, action: str) -> str:
@@ -241,11 +270,7 @@ async def on_text(update: Update, _: ContextTypes.DEFAULT_TYPE) -> bool:
     cards.comment(c["id"], text)
     named = cards.topic_named_in(text)
     if named and named != c["topic"]:
-        name = (cards.topic(named) or {}).get("name", named)
-        if c["status"] == "open":
-            await close(c, f"↪ Moved to {html.escape(name)}.")
-        cards.move(c["id"], named)
-        await pump()
+        await _move(c, named)
         return True
     try:
         import content  # the remake pipeline's Claude helper
@@ -257,10 +282,7 @@ async def on_text(update: Update, _: ContextTypes.DEFAULT_TYPE) -> bool:
         out = {"keep": True}
     if out.get("use") and c["status"] == "open":
         c = cards.rewrite(c["id"], str(out["use"]), [str(s) for s in out.get("steps") or []][:4])
-        await call("editMessageText", {"chat_id": _owner(), "message_id": c["message_id"],
-                                       "text": render(c), "parse_mode": "HTML",
-                                       "link_preview_options": {"is_disabled": True},
-                                       "reply_markup": keyboard(c)})
+        await _redraw(c)
         await m.reply_text("Rewrote the step. Your reply also goes to the matcher as an example.")
     else:
         await m.reply_text("Noted. The matcher learns from it.")

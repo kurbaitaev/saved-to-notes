@@ -325,6 +325,33 @@ def rewrite(cid: str, step: str, steps: list[str] | None = None) -> dict | None:
     return get(cid)
 
 
+def set_note(url: str, note: str, user: str | None = None) -> dict | None:
+    """A note written after the card was made: saved first, then shared again
+    with a reason. It joins the card's events as a comment, so the matcher learns
+    from it too. None when there's no card or nothing new."""
+    user = user or default_user()
+    cid = card_id(user, url)
+    note = note.strip()[:600]
+    with _db() as c:
+        r = c.execute("select kind, destination, my_note from cards where id=?", (cid,)).fetchone()
+        if not r or r["my_note"] == note:
+            return None
+        d = destination_for(note) if r["kind"] == "add" else None
+        c.execute("update cards set my_note=?, destination=? where id=?",
+                  (note, d["id"] if d else r["destination"], cid))
+        _event(c, cid, user, "comment", note)
+    return get(cid)
+
+
+def topic_for_note(card: dict, note: str) -> str | None:
+    """The topic a note sends a card to, by the rule propose() follows: one it
+    names, or the home of a library it names. None when it points nowhere new."""
+    tid = topic_named_in(note)
+    if not tid and card["kind"] == "add":
+        tid = (destination_for(note) or {}).get("topic")
+    return tid if tid and tid != card["topic"] and topic(tid) else None
+
+
 def applied(cid: str) -> None:
     """An added resource has gone into its library (done in a Claude session)."""
     with _db() as c:
