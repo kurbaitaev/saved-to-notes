@@ -7,11 +7,14 @@ No network, no Apify, no Telegram — Apify calls are stubbed.
 """
 
 import contextlib
+import inspect
 import json
 import os
 import pathlib
+import re
 import sys
 import tempfile
+import traceback
 
 
 @contextlib.contextmanager
@@ -19,7 +22,8 @@ def patched(obj, name, value):
     """monkeypatch, without needing pytest.
 
     CI runs this file as a plain script with only requirements.txt installed,
-    so nothing here may import pytest or take a fixture argument.
+    so nothing here may import pytest. The only fixtures a test may ask for are
+    `tmp_path` and `monkeypatch`: the runner at the bottom hands them over.
     """
     missing = object()
     old = getattr(obj, name, missing)
@@ -31,6 +35,41 @@ def patched(obj, name, value):
             delattr(obj, name)
         else:
             setattr(obj, name, old)
+
+
+class _MonkeyPatch:
+    """What these tests use of pytest's monkeypatch, for running as a script."""
+
+    def __init__(self):
+        self._undo = []
+
+    def setattr(self, obj, name, value):
+        # A class's own __dict__: reading Path.home through the class would put
+        # back a bound method instead of the classmethod that was there.
+        missing = object()
+        old = obj.__dict__.get(name, missing) if isinstance(obj, type) else getattr(obj, name, missing)
+        self._undo.append(lambda: delattr(obj, name) if old is missing else setattr(obj, name, old))
+        setattr(obj, name, value)
+
+    def _env(self, name):
+        old = os.environ.get(name)
+        self._undo.append(lambda: os.environ.pop(name, None) if old is None
+                          else os.environ.__setitem__(name, old))
+
+    def setenv(self, name, value):
+        self._env(name)
+        os.environ[name] = value
+
+    def delenv(self, name, raising=True):
+        if raising and name not in os.environ:
+            raise KeyError(name)
+        self._env(name)
+        os.environ.pop(name, None)
+
+    def undo(self):
+        while self._undo:
+            self._undo.pop()()
+
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent))
 
@@ -741,20 +780,6 @@ def test_an_article_note_is_not_labelled_a_transcript():
     obj = {"kind": "article", "summary": "s"}
     assert "article" in bot._detail_label(obj)
     assert "transcript" in bot._detail_label({"kind": "video"}).lower()
-
-
-if __name__ == "__main__":
-    failed = 0
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            try:
-                fn()
-                print(f"  PASS  {name}")
-            except Exception as e:  # noqa: BLE001
-                failed += 1
-                print(f"  FAIL  {name}: {type(e).__name__}: {e}")
-    print(f"\n{'FAILED' if failed else 'all passed'} ({failed} failure(s))")
-    sys.exit(1 if failed else 0)
 
 
 # --- review questions ----------------------------------------------------
@@ -1661,3 +1686,51 @@ def test_a_draft_is_laid_out_in_beats_for_reading_while_filming():
     assert len(heads) == 2  # the empty beat is dropped
     assert heads[1]["heading_2"]["rich_text"][0]["text"]["content"] == "Одна строка\nвторая"
     assert blocks[1] == {"type": "paragraph", "paragraph": {"rich_text": []}}
+
+
+def test_the_script_runner_puts_back_what_a_test_patched():
+    """CI hands tests this stand-in, and a leak would pass one test and quietly
+    change the next. Path.home is the hard case: a classmethod on Path before
+    Python 3.13, inherited from then on, and either must come back as it was."""
+    was_home, was_dumps = pathlib.Path.__dict__.get("home"), json.dumps
+    os.environ["STN_KEPT"], _ = "kept", os.environ.pop("STN_NEW", None)
+    mp = _MonkeyPatch()
+    mp.setattr(pathlib.Path, "home", classmethod(lambda cls: "fake"))
+    mp.setattr(json, "dumps", None)
+    mp.setattr(json, "stn_new", 1)
+    mp.setenv("STN_NEW", "x")
+    mp.setenv("STN_KEPT", "changed")
+    mp.delenv("STN_NEW")
+    mp.delenv("STN_GONE", raising=False)
+    assert pathlib.Path.home() == "fake" and "STN_NEW" not in os.environ
+    mp.undo()
+    assert pathlib.Path.__dict__.get("home") is was_home and pathlib.Path.home() != "fake"
+    assert json.dumps is was_dumps
+    assert not hasattr(json, "stn_new")
+    assert os.environ.pop("STN_KEPT") == "kept" and "STN_NEW" not in os.environ
+
+
+if __name__ == "__main__":
+    failed = ran = 0
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            ran += 1
+            mp = _MonkeyPatch()
+            try:
+                with tempfile.TemporaryDirectory() as d:
+                    fixtures = {"tmp_path": pathlib.Path(d).resolve(), "monkeypatch": mp}
+                    fn(**{arg: fixtures[arg] for arg in inspect.signature(fn).parameters})
+                print(f"  PASS  {name}")
+            except Exception as e:  # noqa: BLE001
+                failed += 1
+                print(f"  FAIL  {name}: {type(e).__name__}: {e}")
+                traceback.print_exc()
+            finally:
+                mp.undo()
+    # This runner once sat mid-file, and CI silently skipped the 52 tests below it.
+    defined = len(re.findall(r"^def test_", pathlib.Path(__file__).read_text(), re.M))
+    if ran != defined:
+        failed += 1
+        print(f"  FAIL  ran {ran} of the {defined} tests in this file: the runner must stay last")
+    print(f"\n{'FAILED' if failed else 'all passed'} ({ran} tests, {failed} failure(s))")
+    sys.exit(1 if failed else 0)

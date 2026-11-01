@@ -31,6 +31,10 @@ jobs:
           pip install -r requirements.txt
           pip install 'ruff==0.9.10'   # pinned: unpinned linters make CI unreproducible
 
+      # Two regression tests cut real video on purpose, and ffmpeg isn't on pip.
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
+
       - name: Compile every module
         run: python -m compileall -q bot.py acquire.py notion.py ledger.py watchdog.py doctor.py
 
