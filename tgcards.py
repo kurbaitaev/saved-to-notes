@@ -42,6 +42,7 @@ AFTER = {
 _topics_on: bool | None = None
 _topics_checked = 0.0
 RECHECK_S = 600  # how often to ask Telegram again while topics are off
+LEARN_BUTTON = {"inline_keyboard": [[{"text": "✅ Finished, next", "callback_data": "l|done"}]]}
 _icons: dict | None = None
 
 
@@ -320,8 +321,60 @@ async def sync_outside() -> None:
     cards.kv_set("outside_seen", str(now))
 
 
+def _ce_call(path: str, body: dict | None = None) -> dict:
+    base = os.environ.get("CE_API", "http://127.0.0.1:8792").rstrip("/")
+    req = urllib.request.Request(base + path, data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Authorization": f"Bearer {os.environ.get('APP_TOKEN', '')}",
+                                          "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.load(r)
+
+
+async def ce(path: str, body: dict | None = None) -> dict:
+    """Context Engine, for what to study and think about. Its being down costs
+    those lines, not the message."""
+    try:
+        return await asyncio.to_thread(_ce_call, path, body)
+    except (OSError, ValueError) as e:
+        log.warning("context engine %s failed: %s", path, e)
+        return {}
+
+
+def _link(item: dict) -> str:
+    title = html.escape(item.get("title") or "")
+    src = item.get("source") or ""
+    return f'<a href="{html.escape(src)}">{title}</a>' if src.startswith("http") else f"<b>{title}</b>"
+
+
+def _learn_line(item: dict) -> str:
+    return f"📚 <b>Learning now:</b> {_link(item)}"
+
+
+async def on_learn(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
+    """The button on Saturday's line: finished it, so show the next one."""
+    q = update.callback_query
+    if str(update.effective_user.id) != cards.default_user():
+        await q.answer("Not yours.")
+        return
+    got = await ce("/api/learn/done", {"via": "telegram"})
+    if not got:
+        await q.answer("Couldn't reach the engine. Try again later.")
+        return
+    await q.answer("Finished")
+    await call("editMessageReplyMarkup", {"chat_id": q.message.chat_id, "message_id": q.message.message_id,
+                                          "reply_markup": {"inline_keyboard": []}})
+    nxt = got.get("next")
+    text = (_learn_line(nxt) if nxt else "📚 That was the last one on your list.")
+    params = {"chat_id": q.message.chat_id, "text": text, "parse_mode": "HTML",
+              "link_preview_options": {"is_disabled": True}}
+    if nxt:
+        params["reply_markup"] = LEARN_BUTTON
+    await call("sendMessage", params)
+
+
 async def saturday() -> None:
-    """Saturday evening, one line: what you finished this week, per topic."""
+    """Saturday evening, one message: what you finished this week per topic, what
+    you're studying, and one idea. The idea asks nothing of you."""
     now = dt.datetime.now()
     week = now.strftime("%G-W%V")
     if now.weekday() != 5 or now.hour < 18 or cards.kv_get(f"saturday_{week}"):
@@ -340,8 +393,17 @@ async def saturday() -> None:
         text = f"🗓 Nothing finished this week. {st['open']} cards are waiting in their topics."
     if st["rate"] is not None:
         text += f"\n\nCards acted on within 14 days: {round(st['rate'] * 100)}% (goal 20%)."
-    await call("sendMessage", {"chat_id": _owner(), "text": text, "parse_mode": "HTML",
-                               "link_preview_options": {"is_disabled": True}})
+    got = await ce("/api/picks")
+    learn, think = got.get("learn"), got.get("think")
+    if learn:
+        text += "\n\n" + _learn_line(learn)
+    if think:
+        why = html.escape((think.get("why") or "")[:280])
+        text += f"\n\n💭 <b>To think about:</b> {_link(think)}\n{why}"
+    params = {"chat_id": _owner(), "text": text, "parse_mode": "HTML", "link_preview_options": {"is_disabled": True}}
+    if learn:
+        params["reply_markup"] = LEARN_BUTTON
+    await call("sendMessage", params)
 
 
 async def tick() -> None:

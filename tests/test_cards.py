@@ -198,6 +198,83 @@ def test_a_topic_has_one_icon_and_no_emoji_in_its_name(tmp_path):
     assert lak["name"] == "Lak" and "icon_custom_emoji_id" not in lak
 
 
+def test_saturdays_line_adds_what_youre_studying_and_one_idea(tmp_path):
+    _setup(tmp_path)
+    calls = _Calls()
+    tgcards.call = calls
+
+    class Saturday(tgcards.dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 7, 19, 0)
+    real, tgcards.dt.datetime = tgcards.dt.datetime, Saturday
+    asked = []
+
+    async def fake_ce(path, body=None):
+        asked.append(path)
+        return {"learn": {"title": "A <book>", "source": "https://x.com/a", "after_this": 2},
+                "think": {"title": "An idea", "why": "It changes how you see it", "source": ""}}
+    real_ce, tgcards.ce = tgcards.ce, fake_ce
+    try:
+        asyncio.run(tgcards.saturday())
+        asyncio.run(tgcards.saturday())     # once a week
+    finally:
+        tgcards.dt.datetime, tgcards.ce = real, real_ce
+    sent = [p for m, p in calls.made if m == "sendMessage"]
+    assert len(sent) == 1 and asked == ["/api/picks"]
+    text = sent[0]["text"]
+    assert '📚 <b>Learning now:</b> <a href="https://x.com/a">A &lt;book&gt;</a>' in text
+    assert "<b>An idea</b>" in text and "It changes how you see it" in text
+    assert sent[0]["reply_markup"] == tgcards.LEARN_BUTTON
+
+
+def test_saturdays_line_still_goes_out_when_the_engine_is_down(tmp_path):
+    _setup(tmp_path)
+    calls = _Calls()
+    tgcards.call = calls
+
+    class Saturday(tgcards.dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 11, 14, 19, 0)
+    real, tgcards.dt.datetime = tgcards.dt.datetime, Saturday
+
+    def down(path, body=None):
+        raise OSError("connection refused")
+    real_call, tgcards._ce_call = tgcards._ce_call, down
+    try:
+        asyncio.run(tgcards.saturday())
+    finally:
+        tgcards.dt.datetime, tgcards._ce_call = real, real_call
+    sent = [p for m, p in calls.made if m == "sendMessage"][0]
+    assert "Nothing finished" in sent["text"] and "reply_markup" not in sent
+
+
+def test_finishing_what_youre_studying_brings_the_next_one(tmp_path):
+    _setup(tmp_path)
+    calls = _Calls()
+    tgcards.call = calls
+    answered = []
+
+    async def answer(text=None):
+        answered.append(text)
+
+    async def fake_ce(path, body=None):
+        assert path == "/api/learn/done"
+        return {"finished": "One", "next": {"title": "Two", "source": ""}}
+    real_ce, tgcards.ce = tgcards.ce, fake_ce
+    q = SimpleNamespace(answer=answer, message=SimpleNamespace(chat_id=42, message_id=9))
+    upd = SimpleNamespace(callback_query=q, effective_user=SimpleNamespace(id=42))
+    try:
+        asyncio.run(tgcards.on_learn(upd, None))
+    finally:
+        tgcards.ce = real_ce
+    assert answered == ["Finished"]
+    assert any(m == "editMessageReplyMarkup" for m, _ in calls.made)
+    sent = [p for m, p in calls.made if m == "sendMessage"][0]
+    assert "<b>Two</b>" in sent["text"] and sent["reply_markup"] == tgcards.LEARN_BUTTON
+
+
 def test_a_reply_naming_another_project_moves_the_card(tmp_path):
     _setup(tmp_path)
     calls = _Calls()

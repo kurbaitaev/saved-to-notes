@@ -1662,6 +1662,7 @@ def main() -> None:
     app.add_handler(CommandHandler("start", on_start))
     app.add_handler(CommandHandler("force", on_force))
     app.add_handler(CallbackQueryHandler(tgcards.on_callback, pattern=r"^c\|"))
+    app.add_handler(CallbackQueryHandler(tgcards.on_learn, pattern=r"^l\|"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_message))
     app.add_error_handler(_on_error)
     log.info("bot running (polling)")
