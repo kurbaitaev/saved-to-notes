@@ -1710,6 +1710,87 @@ def test_the_script_runner_puts_back_what_a_test_patched():
     assert os.environ.pop("STN_KEPT") == "kept" and "STN_NEW" not in os.environ
 
 
+# Nov 2 2026: the server's login lapsed and nine saves in a row failed over two
+# days. A settings warning on stderr hid the cause, and app saves are quiet.
+def _failing_saves_db(tmp_path, statuses):
+    import sqlite3
+    import time
+    c = sqlite3.connect(tmp_path / "app.db")
+    c.execute("create table shares (url text primary key, ts real, status text, category text, title text)")
+    now = time.time()
+    for i, s in enumerate(statuses):  # first status is the newest
+        c.execute("insert into shares (url, ts, status) values (?, ?, ?)", (f"u{i}", now - i * 60, s))
+    c.commit()
+    c.close()
+
+
+def test_run_agent_sees_a_login_failure_behind_a_settings_warning(tmp_path, monkeypatch):
+    import asyncio as aio
+
+    class Proc:
+        returncode = 1
+
+        async def communicate(self):
+            return (b"Failed to authenticate: OAuth session expired\n",
+                    b"These settings entries were skipped\n")
+
+    async def fake_exec(*a, **k):
+        return Proc()
+
+    flag, error = tmp_path / ".auth_failed", tmp_path / ".agent_last_error"
+    monkeypatch.setattr(bot.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(bot, "AUTH_FAILED_FLAG", flag)
+    monkeypatch.setattr(bot, "AGENT_ERROR_FILE", error)
+    out = aio.run(bot.run_agent("x"))
+    assert "login expired" in out and flag.exists()
+    assert "Failed to authenticate" in error.read_text()
+
+
+def test_watchdog_alerts_once_when_saves_keep_failing_and_once_when_they_recover(tmp_path, monkeypatch):
+    import watchdog
+    sent = []
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(watchdog, "_SAVES_FLAG", tmp_path / ".saves_failing")
+    monkeypatch.setattr(watchdog, "_AGENT_ERROR", tmp_path / ".agent_last_error")
+    monkeypatch.setattr(watchdog, "WLOG", tmp_path / "watchdog.log")
+    monkeypatch.setattr(watchdog, "alert", lambda t, c, text: sent.append(text) or True)
+    (tmp_path / ".agent_last_error").write_text("Your credit balance is too low to access the API")
+    _failing_saves_db(tmp_path, ["failed", "failed", "failed", "notion"])
+    watchdog.check_saves("t", "c")
+    watchdog.check_saves("t", "c")
+    assert len(sent) == 1 and "credit has run out" in sent[0]
+    (tmp_path / "app.db").unlink()
+    _failing_saves_db(tmp_path, ["notion", "failed", "failed", "failed"])
+    watchdog.check_saves("t", "c")
+    assert len(sent) == 2 and "working again" in sent[1]
+
+
+def test_watchdog_ignores_a_short_or_old_failure_streak(tmp_path, monkeypatch):
+    import sqlite3
+    import watchdog
+    monkeypatch.setenv("APP_DATA_DIR", str(tmp_path))
+    _failing_saves_db(tmp_path, ["failed", "failed", "notion"])
+    assert not watchdog.saves_failing()
+    c = sqlite3.connect(tmp_path / "app.db")
+    c.execute("update shares set status = 'failed', ts = ts - ?", (watchdog.SAVES_FAILING_WINDOW_S + 60,))
+    c.commit()
+    c.close()
+    assert not watchdog.saves_failing()
+
+
+def test_watchdog_does_not_call_a_signed_out_login_dead_when_an_api_key_is_set(tmp_path, monkeypatch):
+    import watchdog
+    monkeypatch.setattr(watchdog, "_AUTH_FAILED", tmp_path / ".auth_failed")
+    monkeypatch.setattr(watchdog, "_AUTH_SEEN", tmp_path / ".auth_seen")
+    monkeypatch.setattr(watchdog.claude_login, "oauth_blob", lambda: {"accessToken": "", "expiresAt": 0})
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert watchdog.claude_token_expired()
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-value")
+    assert not watchdog.claude_token_expired()
+    (tmp_path / ".auth_failed").write_text("1")  # a real rejection still counts
+    assert watchdog.claude_token_expired()
+
+
 if __name__ == "__main__":
     failed = ran = 0
     for name, fn in sorted(globals().items()):

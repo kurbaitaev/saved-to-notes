@@ -97,6 +97,7 @@ _late_notes: dict[str, str] = {}
 # Ground truth for "the login is dead": the agent actually said so. The keychain
 # is only a guess, and guessing wrong once cost three reels with no alert.
 AUTH_FAILED_FLAG = PROJECT_DIR / "logs" / ".auth_failed"
+AGENT_ERROR_FILE = PROJECT_DIR / "logs" / ".agent_last_error"
 _AUTH_FAIL_RE = re.compile(
     r"OAuth (?:session|token) expired|Failed to authenticate|not authenticated|"
     r"Invalid API key|authentication_error|\b401\b", re.I)
@@ -261,9 +262,12 @@ async def run_agent(prompt: str) -> str:
         err = stderr.decode(errors="replace").strip()
         out = stdout.decode(errors="replace").strip()
         # The CLI reports auth failures on stdout, so logging stderr alone left
-        # "agent failed (1):" with no cause at all.
-        detail = err or out or "(no output from the agent)"
+        # "agent failed (1):" with no cause at all. Keep both: a settings warning
+        # on stderr hid an expired login on stdout for two days (Nov 2 2026).
+        detail = "\n".join(x for x in (err, out) if x) or "(no output from the agent)"
         log.error("agent failed (%s): %s", proc.returncode, detail[-2000:])
+        AGENT_ERROR_FILE.parent.mkdir(exist_ok=True)
+        AGENT_ERROR_FILE.write_text(detail[-1000:])  # the watchdog reads why saves fail
         if _AUTH_FAIL_RE.search(detail):
             AUTH_FAILED_FLAG.parent.mkdir(exist_ok=True)
             AUTH_FAILED_FLAG.write_text(str(int(time.time())))
@@ -272,6 +276,7 @@ async def run_agent(prompt: str) -> str:
                     "`claude` then `/login` in a terminal. Send the link again afterwards.")
         return f"❌ Agent failed:\n{detail[-1500:]}"
     AUTH_FAILED_FLAG.unlink(missing_ok=True)  # a successful run proves auth works
+    AGENT_ERROR_FILE.unlink(missing_ok=True)
     return stdout.decode().strip() or "❌ Agent returned no output."
 
 

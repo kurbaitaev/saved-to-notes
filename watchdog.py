@@ -11,6 +11,8 @@ bot self-heals when connectivity returns, so the watchdog leaves it alone.
 import json
 import os
 import pathlib
+import re
+import sqlite3
 import subprocess
 import sys
 import time
@@ -27,6 +29,13 @@ WLOG = PROJ / "logs" / "watchdog.log"
 STALE_SECONDS = 600  # >10 min without a heartbeat = stuck
 SERVICE = "saved-to-notes.service"
 IS_MAC = sys.platform == "darwin"
+
+SAVES_FAILING_AFTER = 3  # this many failed shares in a row means something is wrong
+SAVES_FAILING_WINDOW_S = 48 * 3600
+_SAVES_FLAG = PROJ / "logs" / ".saves_failing"
+_AGENT_ERROR = PROJ / "logs" / ".agent_last_error"  # written by bot.py
+_CREDIT_RE = re.compile(r"credit balance|out of credit|spend limit|usage limit", re.I)
+_AUTH_RE = re.compile(r"Failed to authenticate|Invalid API key|authentication_error|\b401\b", re.I)
 
 
 def load_env() -> None:
@@ -166,6 +175,8 @@ def claude_token_expired() -> bool:
     """
     if _AUTH_FAILED.exists():
         return True
+    if os.environ.get("ANTHROPIC_API_KEY", "").strip():
+        return False  # the bot runs on the API key, so a signed-out login doesn't matter
     blob = claude_login.oauth_blob()
     if not blob:
         # Nothing to read at all. On a server this is normal when an API key is
@@ -198,6 +209,62 @@ def check_claude_auth(token: str, chat: str) -> None:
         _AUTH_FAILED.unlink(missing_ok=True)
         alert(token, chat, "✅ Claude login restored — the bot is analyzing reels again.")
         wlog("claude OAuth restored")
+
+
+def recent_share_statuses(n: int = SAVES_FAILING_AFTER) -> list[tuple[str, float]]:
+    """The last finished shares from the app, newest first, as (status, time)."""
+    root = pathlib.Path(os.environ.get("APP_DATA_DIR") or PROJ / "app-data")
+    try:
+        c = sqlite3.connect(f"file:{root / 'app.db'}?mode=ro", uri=True, timeout=10)
+        try:
+            return c.execute("select status, ts from shares where status != 'sorting' "
+                             "order by ts desc limit ?", (n,)).fetchall()
+        finally:
+            c.close()
+    except sqlite3.Error:
+        return []
+
+
+def saves_failing() -> bool:
+    """True when every one of the last few shares failed and the newest is recent.
+
+    App saves are quiet by design, so without this an outage says nothing:
+    on Nov 2 2026 nine saves in a row failed over two days and he didn't know.
+    An old streak doesn't count, because nothing new may be failing now.
+    """
+    rows = recent_share_statuses()
+    return (len(rows) == SAVES_FAILING_AFTER
+            and all(status == "failed" for status, _ in rows)
+            and time.time() - rows[0][1] < SAVES_FAILING_WINDOW_S)
+
+
+def saves_failure_reason() -> str:
+    """Why the agent is failing, in words he can act on."""
+    try:
+        detail = _AGENT_ERROR.read_text()
+    except OSError:
+        return "Check logs/bot.err.log on the server."
+    if _CREDIT_RE.search(detail):
+        return ("The Claude API credit has run out. Saves stop until next month's credit "
+                "arrives, unless you add credit in the Claude Console.")
+    if _AUTH_RE.search(detail):
+        return "Claude rejected the API key or login."
+    return "The Claude agent failed. See logs/bot.err.log on the server."
+
+
+def check_saves(token: str, chat: str) -> None:
+    """Alert once when saves keep failing, and once when they work again."""
+    if saves_failing():
+        if not _SAVES_FLAG.exists():
+            sent = alert(token, chat, f"⚠️ Your last {SAVES_FAILING_AFTER} saves failed. "
+                                      f"{saves_failure_reason()}")
+            if sent:  # a lost alert should be tried again on the next run
+                _SAVES_FLAG.write_text(str(int(time.time())))
+            wlog(f"saves failing -> alerted={sent}")
+    elif _SAVES_FLAG.exists():
+        _SAVES_FLAG.unlink(missing_ok=True)
+        alert(token, chat, "✅ Saves are working again.")
+        wlog("saves working again")
 
 
 def ensure_workspace_trust() -> bool:
@@ -233,8 +300,9 @@ def main() -> None:
     if left is not None and left < 14 and time.strftime("%H") == "09":
         alert(token, chat, f"⏳ The bot's 1-year Claude token expires in {left:.0f} day(s). "
                            "On the server run:  stn-setup-token")
-    # A setup-token makes the refreshable login irrelevant to the bot.
-    days = None if claude_login.long_lived_token() else claude_login.days_until_refresh_expiry()
+    # A setup-token or an API key makes the refreshable login irrelevant to the bot.
+    days = (None if claude_login.long_lived_token() or os.environ.get("ANTHROPIC_API_KEY", "").strip()
+            else claude_login.days_until_refresh_expiry())
     if days is not None and days < 7 and time.strftime("%H") == "09":
         alert(token, chat, f"⏳ The bot's Claude login can't refresh itself in {days:.0f} day(s). "
                            "On the server run:  claude setup-token  (a 1-year token), or log in again.")
@@ -261,6 +329,7 @@ def main() -> None:
         alert(token, chat, "🔧 Restored the bot's workspace trust flag — web search had been "
                            "silently disabled (happens after a CLI re-login). Fixed automatically.")
     check_claude_auth(token, chat)
+    check_saves(token, chat)
 
     running = bot_running()
     online = telegram_ok(token)
