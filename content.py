@@ -5,6 +5,8 @@
     python3 content.py drafts --backfill   # also draft every ticked bookmark still without a row
     python3 content.py stats               # posted reels → views on their Content rows
     python3 content.py stats --force       # run even if the last pass was under 3 days ago
+    python3 content.py pick                # this week's reel to film: one waiting draft, tightened
+    python3 content.py pick --show         # the latest pick again, nothing new done
 
 drafts (timer, every 15 min): a bookmark ticked "Worth remaking" that has no row
 in 💡 Content Ideas gets one — status Inbox, a Russian script close to the
@@ -17,6 +19,11 @@ row, else by the model comparing caption and script) and the row gets total
 views, likes, comments, the best variant's link and status Published. The views
 also land on the source bookmark ("Remake views"), so the saved reel shows what
 its remake did. Nothing is written when the scrape fails or comes back empty.
+
+pick (run weekly from his laptop, Sundays): of the bot drafts still in Inbox, the one
+most like the remakes that beat his usual reel. It gets a close edit for speaking
+aloud, appended under the original on its row, and Priority High. One pick a week;
+a draft is never picked twice. Nothing is written when a model call fails.
 """
 
 import argparse
@@ -591,10 +598,173 @@ def cmd_stats(force: bool, dry: bool, days: int) -> int:
     return 0
 
 
+# --- reel of the week ---------------------------------------------------------------
+USUAL_VIEWS = int(os.environ.get("CONTENT_USUAL_VIEWS", "1753"))  # median of his 38 reels, Jul 1 to Oct 9 2026
+BOT_NOTE = "Черновик бота"
+PICK_EVERY = dt.timedelta(days=6)
+KEEP_SHARE = 0.6   # a close edit that keeps less of his draft than this is thrown away
+MIN_WORDS = 40     # a draft shorter than this is not a script to read to camera (the original had little speech)
+
+PICK_PROMPT = """Magomed films Russian talking-head reels that are remakes of reels he saved. \
+His usual reel gets {usual} views. Below are his remakes that did clearly better, the ones that \
+did not, and the drafts waiting to be filmed.
+
+Pick the ONE waiting draft most likely to do well for HIM. Judge by what his better remakes \
+have in common (topic, tone, format) and what the weaker ones share, not by general taste.
+
+Answer with ONE JSON object and nothing else:
+{{"pick": "<draft id>", "why": "<one plain English sentence, max 30 words: which better remake it \
+resembles and in what way>", "runner_up": "<draft id or empty>"}}
+
+DID BETTER (views | title | hook):
+{winners}
+
+DID NOT (views | title | hook):
+{losers}
+
+WAITING DRAFTS (id | title | hook | how it opens):
+{drafts}"""
+
+TIGHTEN_PROMPT = """You are doing a CLOSE EDIT of a Russian script Magomed will read to camera. \
+It is already an adaptation of another creator's reel; your job is only to make it better to say aloud.
+
+Rules:
+- Keep the order, facts, examples, argument and ending. Keep at least 85% of the wording.
+- Change a line only for a clear gain when spoken: the second line must move the story on \
+(the event, cause, scene or question behind the opening line) and never restate it; every line \
+adds something new, so cut or merge lines where nothing changes.
+- Natural spoken Russian, "ты", short sentences. He is from Dagestan: no Moscow or corporate \
+voice, no phrasing that sounds translated.
+- Add no ideas, statistics, lessons or metaphors that are not in the draft.
+- No emojis, hashtags, stage directions or long dashes.
+- Keep the beats: each beat is 1-4 short lines read in one breath.
+
+Answer with ONE JSON object and nothing else:
+{{"beats": [["line", "line"], ["line"]], "changes": ["<what changed and why, max 12 words, in English>"]}}
+Give at most 5 changes. If the draft already reads well aloud, change little and say so.
+
+DRAFT:
+{draft}"""
+
+
+def script_beats(page_id: str) -> list[list[str]]:
+    """The script on a draft row: its big lines, down to the first divider."""
+    beats = []
+    for b in api(f"blocks/{page_id}/children?page_size=100").get("results", []):
+        if b["type"] == "divider":
+            break
+        if b["type"] in ("heading_1", "heading_2", "heading_3"):
+            lines = "".join(x.get("plain_text", "") for x in b[b["type"]].get("rich_text") or []).split("\n")
+            lines = [x.strip() for x in lines if x.strip()]
+            if lines:
+                beats.append(lines)
+    return beats
+
+
+def kept_share(old: list[list[str]], new: list[list[str]]) -> float:
+    """How much of the draft's wording survives the edit (words, counted with repeats)."""
+    import collections
+    words = lambda beats: collections.Counter(re.findall(r"\w+", " ".join(" ".join(b) for b in beats).lower()))
+    a, b = words(old), words(new)
+    return sum(min(n, b[w]) for w, n in a.items()) / max(1, sum(a.values()))
+
+
+def cmd_pick(dry: bool, show: bool, force: bool, as_json: bool) -> int:
+    state = load_state()
+    picks = state.get("reel_picks", [])
+
+    def out(p: dict | None) -> int:
+        if as_json:
+            print(json.dumps(p or {}, ensure_ascii=False))
+        elif p:
+            print(f"{p['date']}  {p['title']}\n{p['why']}\n{p['url']}\n")
+            print("\n\n".join("\n".join(b) for b in p["beats"]))
+        else:
+            print("no pick yet")
+        return 0
+
+    last = picks[-1] if picks else None
+    if show:
+        return out(last)
+    if last and not force and not dry and dt.date.today() - dt.date.fromisoformat(last["date"]) < PICK_EVERY:
+        log.info("this week's pick is already made (%s)", last["date"])
+        return out(last)
+
+    rows = query(CONTENT_DB)
+    prop = lambda r, k: text_of(r["properties"].get(k) or {})
+    views = lambda r: (r["properties"].get("Views") or {}).get("number") or 0
+    remakes = [r for r in rows if status_of(r) == "Published" and views(r)
+               and (r["properties"].get("Source") or {}).get("url")]
+    line = lambda r: f"{views(r):,} | {prop(r, 'Idea')[:70]} | {prop(r, 'Hook / key idea')[:140]}"
+    winners = [line(r) for r in sorted(remakes, key=views, reverse=True) if views(r) >= 2 * USUAL_VIEWS]
+    losers = [line(r) for r in sorted(remakes, key=views) if views(r) < 2 * USUAL_VIEWS]
+    done = {p["id"] for p in picks}
+    waiting = {r["id"]: r for r in rows if status_of(r) == "Inbox" and BOT_NOTE in prop(r, "Notes")
+               and r["id"] not in done}
+    if not waiting:
+        log.info("no bot drafts waiting in Inbox")
+        return out(None)
+    if not winners:
+        log.warning("no remake has beaten twice his usual yet: nothing to judge by, no pick")
+        return out(None)
+    scripts = {i: script_beats(i) for i in waiting}
+    words = lambda beats: len(re.findall(r"\w+", " ".join(" ".join(x) for x in beats)))
+    short = [prop(r, "Idea").split(" · ")[0] for i, r in waiting.items() if words(scripts[i]) < MIN_WORDS]
+    if short:
+        log.info("left out, under %d words: %s", MIN_WORDS, ", ".join(short))
+    waiting = {i: r for i, r in waiting.items() if words(scripts[i]) >= MIN_WORDS}
+    if not waiting:
+        log.info("no waiting draft is long enough to film")
+        return out(None)
+    drafts = "\n".join(
+        f"{i} | {prop(r, 'Idea')[:70]} | {prop(r, 'Hook / key idea')[:140]} | "
+        + " / ".join(" ".join(b) for b in scripts[i][:3])[:400] for i, r in waiting.items())
+    ans = ask_claude(PICK_PROMPT.format(usual=f"{USUAL_VIEWS:,}", winners="\n".join(winners),
+                                        losers="\n".join(losers) or "(none)", drafts=drafts))
+    pid = ans.get("pick")
+    if pid not in waiting:
+        raise RuntimeError(f"the pick {pid!r} is not one of the waiting drafts")
+    row, old = waiting[pid], scripts[pid]
+    beats, changes, kept, tightened = old, [], 1.0, False
+    try:
+        t = ask_writer(TIGHTEN_PROMPT.format(draft="\n\n".join("\n".join(b) for b in old)))
+        new = [[str(x).strip() for x in b if str(x).strip()] for b in t.get("beats") or []]
+        new = [b for b in new if b]
+        share = kept_share(old, new) if new else 0
+        if new and share >= KEEP_SHARE:
+            beats, changes, kept, tightened = new, [str(c) for c in (t.get("changes") or [])][:5], share, new != old
+        else:
+            log.warning("close edit thrown away: it kept %.0f%% of the draft", share * 100)
+    except Exception as e:
+        log.warning("close edit failed, the draft stays as it is: %s", e)
+    today = dt.date.today().isoformat()
+    runner = waiting.get(ans.get("runner_up") or "")
+    pick = {"id": pid, "date": today, "title": prop(row, "Idea").split(" · ")[0], "url": row.get("url", ""),
+            "source": (row["properties"].get("Source") or {}).get("url") or "",
+            "why": str(ans.get("why") or "").strip(), "runner_up": prop(runner, "Idea").split(" · ")[0] if runner else "",
+            "waiting": len(waiting), "tightened": tightened, "kept": round(kept, 2), "changes": changes, "beats": beats}
+    if dry:
+        return out(pick)
+    api(f"pages/{pid}", "PATCH", {"properties": {"Priority": {"select": {"name": "High"}}}})
+    if tightened:
+        api(f"blocks/{pid}/children", "PATCH", {"children": [
+            {"type": "divider", "divider": {}},
+            {"type": "paragraph", "paragraph": {"rich_text": rt(
+                f"Вариант недели, {today}: тот же текст, подтянутый для речи. Оригинал выше.")}},
+        ] + beat_blocks(beats)[:90]})
+    state = load_state()
+    state["reel_picks"] = state.get("reel_picks", []) + [pick]
+    save_state(state)
+    log.info("reel of the week: %s (%s)", pick["title"], "tightened" if tightened else "draft as it is")
+    return out(pick)
+
+
 def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["drafts", "stats"])
+    ap.add_argument("cmd", choices=["drafts", "stats", "pick"])
+    ap.add_argument("--show", action="store_true")
+    ap.add_argument("--json", action="store_true")
     ap.add_argument("--backfill", action="store_true")
     ap.add_argument("--force", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
@@ -603,6 +773,8 @@ def main() -> int:
     load_env()
     if a.cmd == "drafts":
         return cmd_drafts(a.backfill, a.dry_run)
+    if a.cmd == "pick":
+        return cmd_pick(a.dry_run, a.show, a.force, a.json)
     return cmd_stats(a.force, a.dry_run, a.days)
 
 
