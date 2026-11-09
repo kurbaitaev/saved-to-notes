@@ -374,7 +374,10 @@ async def on_learn(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def saturday() -> None:
     """Saturday evening, one message: what you finished this week per topic, what
-    you're studying, and one idea. The idea asks nothing of you."""
+    you're studying, and one idea. The idea asks nothing of you.
+    Off while cards are off (CARDS_CAP=0): the Sunday summary carries it."""
+    if cards.CAP <= 0:
+        return
     now = dt.datetime.now()
     week = now.strftime("%G-W%V")
     if now.weekday() != 5 or now.hour < 18 or cards.kv_get(f"saturday_{week}"):
