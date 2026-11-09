@@ -41,7 +41,13 @@ import time
 import appdb
 import folders
 
-CAP = int(os.environ.get("CARDS_CAP", "3"))
+
+def cap() -> int:
+    """Open cards allowed per topic; 0 switches cards off. Read when asked, not at
+    import: the bot loads .env after its imports, so a value read here was always 3."""
+    return int(os.environ.get("CARDS_CAP", "3"))
+
+
 EXPIRE_DAYS = 14
 FRESH_LIFT = 0.3  # a new save counts for this much more, fading over EXPIRE_DAYS
 DONE = {"done", "remade", "added"}  # what counts as acting on a card
@@ -259,7 +265,7 @@ def due(user: str | None = None, now: float | None = None) -> list[dict]:
         open_by = dict(c.execute("select topic, count(*) from cards where user=? and status='open' "
                                  "group by topic", (user,)).fetchall())
         for t in topics():
-            room = CAP - open_by.get(t["id"], 0)
+            room = cap() - open_by.get(t["id"], 0)
             if room <= 0:
                 continue
             rows = c.execute("select * from cards where user=? and topic=? and status='queued'",

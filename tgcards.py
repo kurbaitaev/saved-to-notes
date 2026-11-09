@@ -376,7 +376,7 @@ async def saturday() -> None:
     """Saturday evening, one message: what you finished this week per topic, what
     you're studying, and one idea. The idea asks nothing of you.
     Off while cards are off (CARDS_CAP=0): the Sunday summary carries it."""
-    if cards.CAP <= 0:
+    if cards.cap() <= 0:
         return
     now = dt.datetime.now()
     week = now.strftime("%G-W%V")
