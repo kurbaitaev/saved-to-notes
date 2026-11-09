@@ -28,6 +28,9 @@ import pathlib
 import re
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 
 PROJ = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(PROJ))
@@ -162,6 +165,71 @@ def ask_claude(prompt: str, timeout: int = 600) -> dict:
     return json.loads(m.group(0))
 
 
+# The Russian remake drafts run on his OpenAI credits since 2026-11-08 (he wants all copywriting there).
+# A separate key name on purpose: OPENAI_API_KEY would also switch the bot's save agent (agent_openai.enabled()).
+# Any failure, or the daily cap, falls back to the Claude CLI; matching reels to rows stays on Claude.
+OPENAI_DRAFT_MODEL = os.environ.get("CONTENT_OPENAI_MODEL", "gpt-5.6-sol")
+OPENAI_USD_DAILY = float(os.environ.get("CONTENT_OPENAI_USD_DAILY", "2"))
+# $ per 1M tokens: input, cached input, output (developers.openai.com/api/docs/pricing, checked 2026-11-08; 5.6 Sol promo until Nov 30)
+OPENAI_PRICES = {"gpt-5.6-sol": (4, 0.4, 20), "gpt-6.1-sol": (2, 0.1, 10), "gpt-6.1-terra": (1, 0.05, 5)}
+OPENAI_USAGE = PROJ / "logs" / "openai_usage.tsv"
+
+
+def openai_spent_today() -> float:
+    since, total = time.time() - 86400, 0.0
+    try:
+        for line in OPENAI_USAGE.read_text().splitlines():
+            ts, _, usd = (line.split("\t") + ["", "", ""])[:3]
+            if ts and float(ts) >= since:
+                total += float(usd or 0)
+    except (OSError, ValueError):
+        pass
+    return total
+
+
+def ask_openai(prompt: str, timeout: int = 300) -> dict:
+    """One JSON answer from the OpenAI Responses API (the prompt itself says JSON, which JSON mode requires)."""
+    key = os.environ.get("CONTENT_OPENAI_API_KEY", "").strip()
+    if not key or not OPENAI_DRAFT_MODEL:
+        raise RuntimeError("no CONTENT_OPENAI_API_KEY")
+    if openai_spent_today() >= OPENAI_USD_DAILY:
+        raise RuntimeError(f"OpenAI daily cap ${OPENAI_USD_DAILY} reached")
+    body = {"model": OPENAI_DRAFT_MODEL, "input": prompt, "max_output_tokens": 16000,
+            "reasoning": {"effort": "medium"}, "text": {"format": {"type": "json_object"}}}
+    req = urllib.request.Request("https://api.openai.com/v1/responses", data=json.dumps(body).encode(),
+                                 headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"})
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                d = json.load(r)
+            break
+        except urllib.error.HTTPError as e:
+            if e.code in (429, 500, 502, 503, 504) and attempt < 2:
+                time.sleep(5 * (attempt + 1)); continue
+            raise RuntimeError(f"openai {e.code}: {e.read().decode()[:300]}")
+    u = d.get("usage", {})
+    pin, pcache, pout = OPENAI_PRICES.get(OPENAI_DRAFT_MODEL, (10, 1, 50))
+    cached = (u.get("input_tokens_details") or {}).get("cached_tokens", 0)
+    usd = ((u.get("input_tokens", 0) - cached) * pin + cached * pcache + u.get("output_tokens", 0) * pout) / 1e6
+    OPENAI_USAGE.parent.mkdir(exist_ok=True)
+    with OPENAI_USAGE.open("a") as f:
+        f.write(f"{time.time():.0f}\t{OPENAI_DRAFT_MODEL}\t{usd:.5f}\n")
+    text = "".join(c.get("text", "") for o in d.get("output", []) if o.get("type") == "message"
+                   for c in o.get("content", []) if c.get("type") == "output_text").strip()
+    if not text:
+        raise RuntimeError(f"openai empty answer (status {d.get('status')}, {d.get('incomplete_details')})")
+    return json.loads(text)
+
+
+def ask_writer(prompt: str) -> dict:
+    """The draft writer: OpenAI first, the Claude CLI when OpenAI is off or fails."""
+    try:
+        return ask_openai(prompt)
+    except Exception as e:
+        log.warning("OpenAI draft failed, using Claude: %s", e)
+        return ask_claude(prompt)
+
+
 def tell(text: str) -> None:
     import digest
     try:
@@ -191,8 +259,9 @@ Do not add ideas, statistics or advice that are not in the original. Do not summ
 cover the whole transcript.
 - Natural spoken Russian, the way a person talks to camera: short sentences, "ты", no \
 bureaucratic or translated-sounding phrasing. Read it back as a native speaker would and \
-rewrite anything that sounds like machine translation.
-- No emojis, no hashtags, no stage directions.
+rewrite anything that sounds like machine translation. He is from Dagestan: never a Moscow \
+hipster or corporate voice.
+- No emojis, no hashtags, no stage directions, no long dashes.
 - Break it into beats: each beat is 1–4 short lines that are read in one breath.
 
 Answer with ONE JSON object and nothing else:
@@ -262,7 +331,7 @@ def make_draft(bm: dict, dry: bool) -> str | None:
         return None
     title, author, verbatim = note_source(note)
     author = author or text_of(p.get("Author") or {})
-    d = ask_claude(DRAFT_PROMPT.format(author=author or "?", title=title, source=verbatim))
+    d = ask_writer(DRAFT_PROMPT.format(author=author or "?", title=title, source=verbatim))
     beats = d.get("beats") or []
     if not beats:
         raise RuntimeError("draft came back without beats")
