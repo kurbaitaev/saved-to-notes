@@ -212,7 +212,8 @@ def ask_openai(prompt: str, timeout: int = 300) -> dict:
             break
         except urllib.error.HTTPError as e:
             if e.code in (429, 500, 502, 503, 504) and attempt < 2:
-                time.sleep(5 * (attempt + 1)); continue
+                time.sleep(5 * (attempt + 1))
+                continue
             raise RuntimeError(f"openai {e.code}: {e.read().decode()[:300]}")
     u = d.get("usage", {})
     pin, pcache, pout = OPENAI_PRICES.get(OPENAI_DRAFT_MODEL, (10, 1, 50))
@@ -664,7 +665,8 @@ def script_beats(page_id: str) -> list[list[str]]:
 def kept_share(old: list[list[str]], new: list[list[str]]) -> float:
     """How much of the draft's wording survives the edit (words, counted with repeats)."""
     import collections
-    words = lambda beats: collections.Counter(re.findall(r"\w+", " ".join(" ".join(b) for b in beats).lower()))
+    def words(beats):
+        return collections.Counter(re.findall(r"\w+", " ".join(" ".join(b) for b in beats).lower()))
     a, b = words(old), words(new)
     return sum(min(n, b[w]) for w, n in a.items()) / max(1, sum(a.values()))
 
@@ -691,11 +693,17 @@ def cmd_pick(dry: bool, show: bool, force: bool, as_json: bool) -> int:
         return out(last)
 
     rows = query(CONTENT_DB)
-    prop = lambda r, k: text_of(r["properties"].get(k) or {})
-    views = lambda r: (r["properties"].get("Views") or {}).get("number") or 0
+    def prop(r, k):
+        return text_of(r["properties"].get(k) or {})
+
+    def views(r):
+        return (r["properties"].get("Views") or {}).get("number") or 0
+
     remakes = [r for r in rows if status_of(r) == "Published" and views(r)
                and (r["properties"].get("Source") or {}).get("url")]
-    line = lambda r: f"{views(r):,} | {prop(r, 'Idea')[:70]} | {prop(r, 'Hook / key idea')[:140]}"
+    def line(r):
+        return f"{views(r):,} | {prop(r, 'Idea')[:70]} | {prop(r, 'Hook / key idea')[:140]}"
+
     winners = [line(r) for r in sorted(remakes, key=views, reverse=True) if views(r) >= 2 * USUAL_VIEWS]
     losers = [line(r) for r in sorted(remakes, key=views) if views(r) < 2 * USUAL_VIEWS]
     done = {p["id"] for p in picks}
@@ -708,7 +716,9 @@ def cmd_pick(dry: bool, show: bool, force: bool, as_json: bool) -> int:
         log.warning("no remake has beaten twice his usual yet: nothing to judge by, no pick")
         return out(None)
     scripts = {i: script_beats(i) for i in waiting}
-    words = lambda beats: len(re.findall(r"\w+", " ".join(" ".join(x) for x in beats)))
+    def words(beats):
+        return len(re.findall(r"\w+", " ".join(" ".join(x) for x in beats)))
+
     short = [prop(r, "Idea").split(" · ")[0] for i, r in waiting.items() if words(scripts[i]) < MIN_WORDS]
     if short:
         log.info("left out, under %d words: %s", MIN_WORDS, ", ".join(short))
