@@ -41,7 +41,7 @@ for pair in "bot.plist.template:$LABEL" "watchdog.plist.template:$LABEL-watchdog
   # fail with "Input/output error". With set -e that used to abort the whole
   # script here, so any job after the first never got rendered at all.
   ok=0
-  for attempt in 1 2 3; do
+  for _ in 1 2 3; do
     if launchctl bootstrap "$DOMAIN" "$AGENTS/$label.plist" 2>/dev/null; then ok=1; break; fi
     sleep 2
   done
